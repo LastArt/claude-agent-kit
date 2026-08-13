@@ -1,0 +1,16 @@
+# Нормализация окончаний строк для кроссплатформенности.
+# Текст в репозитории — LF; при checkout приводится по правилам ниже.
+* text=auto eol=lf
+
+# Скрипты, которые ДОЛЖНЫ быть LF (иначе bash/node на Linux/macOS ломаются на \r)
+*.sh   text eol=lf
+*.mjs  text eol=lf
+
+# PowerShell комфортнее с CRLF на Windows
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+
+# Бинарники (на будущее) — не трогать
+*.png binary
+*.ico binary
+*.jpg binary

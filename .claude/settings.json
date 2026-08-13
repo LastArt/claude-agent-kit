@@ -1,0 +1,76 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(node .claude/hooks/check-syntax.mjs)",
+      "Bash(node .claude/hooks/check-syntax.mjs --selftest)",
+      "Bash(node .claude/hooks/git-status.mjs)",
+      "Bash(node .claude/hooks/banner.mjs)",
+      "Bash(node .claude/hooks/banner.mjs --compact)",
+      "Bash(node .claude/hooks/banner.mjs --welcome)",
+      "Bash(node .claude/hooks/archive-task.mjs)",
+      "Bash(node .claude/hooks/archive-task.mjs --dry)",
+      "Bash(node .claude/hooks/stats.mjs)",
+      "Bash(node .claude/hooks/stats.mjs --all)",
+      "Edit(.claude/artifacts/**)",
+      "Write(.claude/artifacts/**)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Edit(.env)",
+      "Write(.env)",
+      "Read(**/.env)",
+      "Edit(**/.env)",
+      "Write(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(**/.env.*)",
+      "Write(**/.env.*)",
+      "Read(**/*.pem)",
+      "Edit(**/*.pem)",
+      "Write(**/*.pem)",
+      "Read(**/*.key)",
+      "Edit(**/*.key)",
+      "Write(**/*.key)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/banner.mjs --compact",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/check-syntax.mjs",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/git-status.mjs",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

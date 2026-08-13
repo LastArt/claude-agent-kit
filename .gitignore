@@ -1,0 +1,26 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs / temp
+*.log
+tmp/
+scratch/
+
+# Node
+node_modules/
+
+# Локальные разрешения Claude Code: принадлежат конкретной машине,
+# содержат её пути и не должны попадать в общий набор.
+.claude/settings.local.json
+.claude/guide.html
+# Реестр установленных файлов — генерируется в каждом проекте под /cckit_uninstall,
+# не часть исходников набора.
+.claude/.cckit-manifest.json
