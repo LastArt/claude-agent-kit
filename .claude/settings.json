@@ -14,6 +14,8 @@
       "Bash(node .claude/hooks/archive-task.mjs --dry)",
       "Bash(node .claude/hooks/stats.mjs)",
       "Bash(node .claude/hooks/stats.mjs --all)",
+      "Bash(node .claude/hooks/map.mjs)",
+      "Bash(node .claude/hooks/map.mjs --open)",
       "Edit(.claude/artifacts/**)",
       "Write(.claude/artifacts/**)"
     ],

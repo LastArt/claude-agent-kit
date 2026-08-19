@@ -50,7 +50,8 @@ const alwaysOurs = (rel) =>
   rel === '.cckit-manifest.json' ||
   rel === 'artifacts/history' || rel.startsWith('artifacts/history/') ||
   rel.startsWith('artifacts/') || // PLAN/REVIEW/ROADMAP/FAQ_TEMPLATE и снимки задач
-  rel === 'explores' || rel.startsWith('explores/'); // кэш разведок модулей
+  rel === 'explores' || rel.startsWith('explores/') || // кэш разведок модулей
+  rel === 'map.html'; // карта проекта, собирается хуком уже после установки
 
 function owned(rel) {
   if (alwaysOurs(rel)) return true;
@@ -69,6 +70,7 @@ function classify(rel) {
   if (mutable.has(rel)) return { group: 'service', hashed: false };
   if (rel.startsWith('artifacts/')) return { group: 'service', hashed: false }; // живые артефакты
   if (rel === 'explores' || rel.startsWith('explores/')) return { group: 'service', hashed: false }; // кэш разведок
+  if (rel === 'map.html' || rel === 'guide.html') return { group: 'service', hashed: false };        // собранные страницы
   return { group: 'service', hashed: true };                                     // механизм кита
 }
 
@@ -104,6 +106,13 @@ if (!entries.some((e) => e.path === HIST)) entries.push({ path: HIST, group: 'me
 // снятие кита убирало и разведки, появившиеся позже.
 const EXPL = '.claude/explores';
 if (!entries.some((e) => e.path === EXPL)) entries.push({ path: EXPL, group: 'service', dir: true });
+
+// Собранные страницы (карта проекта, инструкция) рождаются хуками уже после установки, поэтому
+// на момент записи реестра их обычно ещё нет. Заявляем их заранее: появятся — снимутся вместе
+// с китом, не появятся — деинсталляция молча пропустит несуществующее.
+for (const page of ['.claude/map.html', '.claude/guide.html']) {
+  if (!entries.some((e) => e.path === page)) entries.push({ path: page, group: 'service' });
+}
 
 // Сам манифест — служебный, уезжает вместе с китом.
 entries.push({ path: '.claude/.cckit-manifest.json', group: 'service' });

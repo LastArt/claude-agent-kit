@@ -21,6 +21,7 @@ node_modules/
 # содержат её пути и не должны попадать в общий набор.
 .claude/settings.local.json
 .claude/guide.html
+.claude/map.html
 # Реестр установленных файлов — генерируется в каждом проекте под /cckit_uninstall,
 # не часть исходников набора.
 .claude/.cckit-manifest.json

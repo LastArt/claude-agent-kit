@@ -59,6 +59,7 @@ function isLiving(rel) {
   if (mutable.has(rel)) return true;
   if (rel.startsWith('artifacts/')) return true;
   if (rel === 'explores' || rel.startsWith('explores/')) return true; // кэш разведок — наработка проекта
+  if (rel === 'map.html' || rel === 'guide.html') return true;         // собранные страницы, а не механизм
   return false;
 }
 // Никогда не едет из мастера в проект.

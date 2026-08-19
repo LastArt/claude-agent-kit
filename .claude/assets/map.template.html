@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Карта проекта {{PROJECT}} — Claude Agent Kit</title>
+<style>
+  :root{
+    --bg:#f0eee6; --surface:#e3dacc; --text:#1f1e1a; --muted:#6b6459;
+    --border:#d9d0be; --accent:#cc5f2e; --code:#ece7db; --panel:#f7f5ef;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);overflow:hidden;
+    font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  code,.mono{font:13px ui-monospace,"Cascadia Code",Consolas,monospace}
+
+  .app{display:flex;height:100vh}
+  .stage{position:relative;flex:1;min-width:0}
+  canvas{display:block;width:100%;height:100%;cursor:grab}
+  canvas.dragging{cursor:grabbing}
+
+  .topbar{position:absolute;left:0;right:0;top:0;padding:14px 18px;pointer-events:none;
+    background:linear-gradient(var(--bg),rgba(240,238,230,0));}
+  .topbar h1{margin:0;font-size:17px;font-weight:700;letter-spacing:-.01em}
+  .topbar .sub{margin:2px 0 0;color:var(--muted);font-size:13px}
+  .pill{display:inline-block;background:var(--accent);color:#fff;border-radius:20px;
+    padding:1px 10px;font-size:12px;font-weight:600;margin-left:6px;vertical-align:1px}
+
+  .hint{position:absolute;left:18px;bottom:14px;color:var(--muted);font-size:12.5px;pointer-events:none}
+  .zoom{position:absolute;right:18px;bottom:14px;display:flex;gap:6px}
+  .zoom button{width:30px;height:30px;border:1px solid var(--border);background:var(--panel);
+    color:var(--text);border-radius:8px;font-size:15px;cursor:pointer;line-height:1}
+  .zoom button:hover{border-color:var(--accent);color:var(--accent)}
+
+  aside{width:340px;flex:0 0 340px;background:var(--panel);border-left:1px solid var(--border);
+    overflow-y:auto;padding:16px 16px 40px}
+  aside h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+    margin:22px 0 8px;font-weight:700}
+  aside h2:first-child{margin-top:0}
+
+  .field{display:block;margin:8px 0}
+  .field input[type=search]{width:100%;padding:7px 10px;border:1px solid var(--border);
+    border-radius:8px;background:#fff;font:14px inherit;color:var(--text)}
+  .field input[type=range]{width:100%;accent-color:var(--accent)}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:8px;
+    color:var(--muted);font-size:12.5px;margin-top:2px}
+  label.check{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:14px;cursor:pointer}
+  label.check input{accent-color:var(--accent);width:15px;height:15px}
+
+  .card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin:8px 0}
+  .card .path{font:13px ui-monospace,Consolas,monospace;font-weight:700;word-break:break-all}
+  .card dl{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin:8px 0 0;font-size:13px}
+  .card dt{color:var(--muted)}
+  .card dd{margin:0}
+  .empty{color:var(--muted);font-size:13.5px;margin:6px 0}
+
+  ul.list{list-style:none;margin:6px 0;padding:0}
+  ul.list li{padding:7px 9px;border:1px solid var(--border);border-radius:8px;margin:5px 0;
+    background:#fff;cursor:pointer;font-size:13.5px}
+  ul.list li:hover{border-color:var(--accent)}
+  ul.list li.on{border-color:var(--accent);box-shadow:0 0 0 2px rgba(204,95,46,.15)}
+  ul.list li .meta{color:var(--muted);font-size:12px;margin-top:2px}
+  ul.list li .files{color:var(--muted);font-size:11.5px;margin-top:3px;
+    font-family:ui-monospace,Consolas,monospace;word-break:break-all}
+
+  .legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin:6px 0}
+  .legend span{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)}
+  .legend i{width:10px;height:10px;border-radius:50%;display:inline-block}
+
+  .note{background:#141413;color:#fff;border-left:3px solid var(--accent);border-radius:8px;
+    padding:10px 13px;margin:10px 0;font-size:12.5px;line-height:1.5}
+  .note b{color:#fff}
+  footer{color:var(--muted);font-size:12px;margin-top:20px;border-top:1px solid var(--border);padding-top:10px}
+
+  @media (max-width:900px){
+    body{overflow:auto}
+    .app{flex-direction:column;height:auto}
+    .stage{height:70vh}
+    aside{width:auto;flex:none;border-left:none;border-top:1px solid var(--border)}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="stage">
+    <canvas id="cv"></canvas>
+    <div class="topbar">
+      <h1>Карта проекта {{PROJECT}}<span class="pill">кит {{VERSION}}</span></h1>
+      <p class="sub" id="sub"></p>
+    </div>
+    <div class="hint">колесо — масштаб · тянуть фон — сдвинуть · тянуть узел — закрепить · двойной клик по узлу — отпустить</div>
+    <div class="zoom">
+      <button id="zin" title="Крупнее">+</button>
+      <button id="zout" title="Мельче">&minus;</button>
+      <button id="zfit" title="Вписать всё">&#9633;</button>
+    </div>
+  </div>
+  <aside>
+    <h2>Поиск</h2>
+    <label class="field"><input type="search" id="q" placeholder="модуль или путь" autocomplete="off"></label>
+
+    <h2>Что показывать</h2>
+    <label class="check"><input type="checkbox" id="useGit" checked> связи из коммитов</label>
+    <label class="check"><input type="checkbox" id="useTask" checked> связи из задач кита</label>
+    <label class="field">
+      <input type="range" id="minw" min="1" max="10" value="1">
+      <span class="row"><span>сила связи от <b id="minwv">1</b></span><span id="linkcount"></span></span>
+    </label>
+
+    <h2>Выбранный модуль</h2>
+    <div id="pick"><p class="empty">Кликните по кружку на карте.</p></div>
+
+    <h2>Задачи из истории</h2>
+    <div id="tasks"></div>
+
+    <h2>Из чего собрано</h2>
+    <div id="about"></div>
+    <footer>Собрано <span id="gen"></span> · Claude Agent Kit</footer>
+  </aside>
+</div>
+
+<script type="application/json" id="data">{{DATA}}</script>
+<script>
+(function () {
+  'use strict';
+  var DATA = JSON.parse(document.getElementById('data').textContent);
+  var nodes = DATA.nodes.map(function (n) {
+    return { id: n.id, group: n.group, commits: n.commits, files: n.files,
+      first: n.first, last: n.last, tasks: n.tasks || [],
+      x: 0, y: 0, vx: 0, vy: 0, fixed: false, r: 0 };
+  });
+  var byId = {};
+  nodes.forEach(function (n, i) { byId[n.id] = i; });
+
+  var links = [];
+  DATA.links.forEach(function (l) {
+    var a = byId[l.source], b = byId[l.target];
+    if (a === undefined || b === undefined) return;
+    links.push({ a: a, b: b, git: l.git || 0, task: l.task || 0 });
+  });
+
+  // Радиус — от числа коммитов: заметно, но без гигантов, которые съедают экран.
+  var maxC = 1;
+  nodes.forEach(function (n) { if (n.commits > maxC) maxC = n.commits; });
+  nodes.forEach(function (n) { n.r = 7 + 17 * Math.sqrt(n.commits / maxC); });
+
+  // Цвет — по верхней папке. Оттенки берём вокруг фирменного оранжевого, чтобы карта
+  // осталась в палитре набора и не превратилась в новогоднюю гирлянду.
+  var groups = [];
+  nodes.forEach(function (n) { if (groups.indexOf(n.group) < 0) groups.push(n.group); });
+  var HUES = [18, 200, 145, 275, 45, 0, 235, 95, 320, 170];
+  function colorOf(group, alpha) {
+    var i = groups.indexOf(group);
+    var h = HUES[(i < 0 ? 0 : i) % HUES.length];
+    var l = 44 + ((i / HUES.length | 0) % 2) * 12;
+    return 'hsla(' + h + ',52%,' + l + '%,' + (alpha === undefined ? 1 : alpha) + ')';
+  }
+
+  var cv = document.getElementById('cv');
+  var ctx = cv.getContext('2d');
+  var view = { x: 0, y: 0, k: 1 };
+  var W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  function resize() {
+    var rect = cv.getBoundingClientRect();
+    W = rect.width; H = rect.height;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    draw();
+  }
+
+  // -------- раскладка --------
+  // Обычная силовая укладка: узлы отталкиваются, связи стягивают, центр придерживает.
+  // Узлов на карте сотни, не тысячи, поэтому честный перебор пар допустим и код остаётся
+  // читаемым — никаких деревьев Барнса-Хата.
+  var alpha = 1;
+  var state = { useGit: true, useTask: true, minw: 1 };
+
+  function weightOf(l) {
+    var w = 0;
+    if (state.useGit) w += l.git;
+    if (state.useTask) w += l.task * 2;   // задача — осознанная связь, весит больше случайного соседства
+    return w;
+  }
+  function activeLinks() {
+    var res = [];
+    for (var i = 0; i < links.length; i++) {
+      var w = weightOf(links[i]);
+      if (w >= state.minw) res.push({ l: links[i], w: w });
+    }
+    return res;
+  }
+
+  var live = activeLinks();
+
+  function seed() {
+    var R = Math.min(W, H) * 0.36 || 260;
+    nodes.forEach(function (n, i) {
+      var a = (i / nodes.length) * Math.PI * 2;
+      var rr = R * (0.35 + 0.65 * Math.sqrt((i % 7) / 7 + 0.1));
+      n.x = Math.cos(a) * rr; n.y = Math.sin(a) * rr; n.vx = 0; n.vy = 0;
+    });
+  }
+
+  function step() {
+    var i, j, n, m, dx, dy, d2, d, f;
+    // отталкивание
+    for (i = 0; i < nodes.length; i++) {
+      n = nodes[i];
+      for (j = i + 1; j < nodes.length; j++) {
+        m = nodes[j];
+        dx = m.x - n.x; dy = m.y - n.y;
+        d2 = dx * dx + dy * dy;
+        if (d2 < 1) { d2 = 1; dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); }
+        if (d2 > 900000) continue;
+        f = (2600 + (n.r + m.r) * 60) / d2;
+        d = Math.sqrt(d2);
+        n.vx -= dx / d * f; n.vy -= dy / d * f;
+        m.vx += dx / d * f; m.vy += dy / d * f;
+      }
+    }
+    // связи
+    for (i = 0; i < live.length; i++) {
+      n = nodes[live[i].l.a]; m = nodes[live[i].l.b];
+      dx = m.x - n.x; dy = m.y - n.y;
+      d = Math.sqrt(dx * dx + dy * dy) || 1;
+      var rest = 90 + n.r + m.r;
+      var pull = Math.min(0.9, 0.06 + live[i].w * 0.012);
+      f = (d - rest) * pull * 0.12;
+      n.vx += dx / d * f; n.vy += dy / d * f;
+      m.vx -= dx / d * f; m.vy -= dy / d * f;
+    }
+    // центр и трение
+    for (i = 0; i < nodes.length; i++) {
+      n = nodes[i];
+      n.vx -= n.x * 0.0022; n.vy -= n.y * 0.0022;
+      if (n.fixed) { n.vx = 0; n.vy = 0; continue; }
+      n.vx *= 0.84; n.vy *= 0.84;
+      n.x += n.vx * alpha; n.y += n.vy * alpha;
+    }
+    alpha *= 0.985;
+  }
+
+  // -------- отрисовка --------
+  var picked = -1, hovered = -1, query = '', taskOn = -1;
+
+  function matches(n) {
+    if (!query) return true;
+    return n.id.toLowerCase().indexOf(query) >= 0;
+  }
+  function inTask(i) {
+    if (taskOn < 0) return false;
+    var t = DATA.tasks[taskOn];
+    return t && t.modules.indexOf(nodes[i].id) >= 0;
+  }
+  function dimmed(i) {
+    if (taskOn >= 0) return !inTask(i);
+    if (query) return !matches(nodes[i]);
+    return false;
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(W / 2 + view.x, H / 2 + view.y);
+    ctx.scale(view.k, view.k);
+
+    var i, l, n, m;
+    // связи
+    for (i = 0; i < live.length; i++) {
+      l = live[i].l; n = nodes[l.a]; m = nodes[l.b];
+      var faded = dimmed(l.a) || dimmed(l.b);
+      var near = picked >= 0 && (l.a === picked || l.b === picked);
+      if (faded && !near) continue;
+      ctx.beginPath();
+      ctx.moveTo(n.x, n.y); ctx.lineTo(m.x, m.y);
+      ctx.lineWidth = Math.min(5, 0.6 + live[i].w * 0.35);
+      ctx.strokeStyle = near ? 'rgba(204,95,46,.75)'
+        : live[i].l.task > 0 ? 'rgba(204,95,46,.28)' : 'rgba(107,100,89,.22)';
+      ctx.stroke();
+    }
+    // узлы
+    for (i = 0; i < nodes.length; i++) {
+      n = nodes[i];
+      var faint = dimmed(i);
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      ctx.fillStyle = colorOf(n.group, faint ? 0.16 : 0.92);
+      ctx.fill();
+      if (i === picked || i === hovered) {
+        ctx.lineWidth = 2.5; ctx.strokeStyle = '#1f1e1a'; ctx.stroke();
+      } else if (inTask(i)) {
+        ctx.lineWidth = 2; ctx.strokeStyle = '#cc5f2e'; ctx.stroke();
+      }
+      // подпись — только там, где она читается: у крупных узлов, у выбранного, при увеличении
+      var label = n.r * view.k > 14 || i === picked || i === hovered || view.k > 1.6;
+      if (label && !faint) {
+        var text = n.id.length > 28 ? '…' + n.id.slice(-27) : n.id;
+        // Размер держим в ЭКРАННЫХ пикселях: холст уже отмасштабирован, поэтому делим на view.k.
+        // Иначе подпись уезжает вместе с геометрией и на отдалении превращается в пыль.
+        var fs = 12 / view.k;
+        ctx.font = '600 ' + fs + 'px ui-monospace,Consolas,monospace';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        var tw = ctx.measureText(text).width;
+        ctx.fillStyle = 'rgba(240,238,230,.78)';
+        ctx.fillRect(n.x - tw / 2 - fs * 0.25, n.y + n.r + fs * 0.2, tw + fs * 0.5, fs * 1.2);
+        ctx.fillStyle = '#1f1e1a';
+        ctx.fillText(text, n.x, n.y + n.r + fs * 0.3);
+      }
+    }
+    ctx.restore();
+  }
+
+  function tick() {
+    if (alpha > 0.004) { step(); draw(); }
+    requestAnimationFrame(tick);
+  }
+
+  // -------- взаимодействие --------
+  function toWorld(px, py) {
+    return { x: (px - W / 2 - view.x) / view.k, y: (py - H / 2 - view.y) / view.k };
+  }
+  function nodeAt(px, py) {
+    var p = toWorld(px, py), best = -1, bestD = 1e9;
+    for (var i = 0; i < nodes.length; i++) {
+      var dx = nodes[i].x - p.x, dy = nodes[i].y - p.y;
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (d < nodes[i].r + 4 && d < bestD) { best = i; bestD = d; }
+    }
+    return best;
+  }
+
+  var drag = null, panning = null;
+  cv.addEventListener('mousedown', function (e) {
+    var rect = cv.getBoundingClientRect();
+    var px = e.clientX - rect.left, py = e.clientY - rect.top;
+    var hit = nodeAt(px, py);
+    if (hit >= 0) {
+      drag = hit; nodes[hit].fixed = true;
+      select(hit);
+    } else {
+      panning = { x: e.clientX - view.x, y: e.clientY - view.y };
+      cv.classList.add('dragging');
+    }
+  });
+  window.addEventListener('mousemove', function (e) {
+    var rect = cv.getBoundingClientRect();
+    var px = e.clientX - rect.left, py = e.clientY - rect.top;
+    if (drag !== null) {
+      var p = toWorld(px, py);
+      nodes[drag].x = p.x; nodes[drag].y = p.y;
+      alpha = Math.max(alpha, 0.35); draw();
+      return;
+    }
+    if (panning) { view.x = e.clientX - panning.x; view.y = e.clientY - panning.y; draw(); return; }
+    if (px < 0 || py < 0 || px > W || py > H) return;
+    var h = nodeAt(px, py);
+    if (h !== hovered) { hovered = h; cv.style.cursor = h >= 0 ? 'pointer' : 'grab'; draw(); }
+  });
+  window.addEventListener('mouseup', function () {
+    drag = null; panning = null; cv.classList.remove('dragging');
+  });
+  cv.addEventListener('dblclick', function (e) {
+    var rect = cv.getBoundingClientRect();
+    var hit = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
+    if (hit >= 0) { nodes[hit].fixed = false; alpha = Math.max(alpha, 0.5); }
+  });
+  cv.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var rect = cv.getBoundingClientRect();
+    var px = e.clientX - rect.left, py = e.clientY - rect.top;
+    var before = toWorld(px, py);
+    var k = view.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12);
+    view.k = Math.max(0.15, Math.min(6, k));
+    var after = toWorld(px, py);
+    view.x += (after.x - before.x) * view.k;
+    view.y += (after.y - before.y) * view.k;
+    draw();
+  }, { passive: false });
+
+  function fit() {
+    if (!nodes.length) return;
+    var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+    nodes.forEach(function (n) {
+      minX = Math.min(minX, n.x - n.r); maxX = Math.max(maxX, n.x + n.r);
+      minY = Math.min(minY, n.y - n.r); maxY = Math.max(maxY, n.y + n.r);
+    });
+    var w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
+    view.k = Math.max(0.15, Math.min(2.2, Math.min(W / (w + 120), H / (h + 120))));
+    view.x = -((minX + maxX) / 2) * view.k;
+    view.y = -((minY + maxY) / 2) * view.k;
+    draw();
+  }
+  document.getElementById('zin').onclick = function () { view.k = Math.min(6, view.k * 1.25); draw(); };
+  document.getElementById('zout').onclick = function () { view.k = Math.max(0.15, view.k / 1.25); draw(); };
+  document.getElementById('zfit').onclick = fit;
+
+  // -------- панель --------
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+  function plural(n, one, few, many) {
+    var a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return many;
+    if (b > 1 && b < 5) return few;
+    if (b === 1) return one;
+    return many;
+  }
+
+  var pickBox = document.getElementById('pick');
+  function select(i) {
+    picked = i;
+    pickBox.innerHTML = '';
+    if (i < 0) { pickBox.appendChild(el('p', 'empty', 'Кликните по кружку на карте.')); draw(); return; }
+    var n = nodes[i];
+    var card = el('div', 'card');
+    card.appendChild(el('div', 'path', n.id));
+    var dl = el('dl');
+    function add(k, v) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); }
+    add('коммитов', String(n.commits));
+    add('файлов', String(n.files));
+    if (n.first) add('правился', n.first === n.last ? n.last : n.first + ' … ' + n.last);
+    if (n.tasks.length) add('в задачах', String(n.tasks.length));
+    card.appendChild(dl);
+    pickBox.appendChild(card);
+
+    // соседи — с кем этот модуль ходит парой чаще всего
+    var near = [];
+    for (var j = 0; j < live.length; j++) {
+      var l = live[j].l;
+      if (l.a === i) near.push({ i: l.b, w: live[j].w, task: l.task });
+      else if (l.b === i) near.push({ i: l.a, w: live[j].w, task: l.task });
+    }
+    near.sort(function (a, b) { return b.w - a.w; });
+    if (!near.length) {
+      pickBox.appendChild(el('p', 'empty', 'Связей при текущих настройках нет — попробуйте ослабить фильтр.'));
+    } else {
+      var ul = el('ul', 'list');
+      near.slice(0, 8).forEach(function (x) {
+        var li = el('li');
+        li.appendChild(el('div', null, nodes[x.i].id));
+        li.appendChild(el('div', 'meta', 'вместе в ' + x.w + ' ' + plural(x.w, 'случае', 'случаях', 'случаях')
+          + (x.task ? ' · есть общая задача' : '')));
+        li.onclick = function () { select(x.i); centerOn(x.i); };
+        ul.appendChild(li);
+      });
+      pickBox.appendChild(ul);
+    }
+    draw();
+  }
+  function centerOn(i) {
+    view.x = -nodes[i].x * view.k; view.y = -nodes[i].y * view.k; draw();
+  }
+
+  var tasksBox = document.getElementById('tasks');
+  function renderTasks() {
+    tasksBox.innerHTML = '';
+    if (!DATA.tasks.length) {
+      tasksBox.appendChild(el('p', 'empty',
+        'История задач пуста. Она наполняется сама, когда задачи проходят через конвейер кита, — и тогда здесь появится подсветка «что трогали в этой доработке».'));
+      return;
+    }
+    var ul = el('ul', 'list');
+    DATA.tasks.forEach(function (t, ti) {
+      var li = el('li');
+      if (ti === taskOn) li.className = 'on';
+      li.appendChild(el('div', null, t.title));
+      li.appendChild(el('div', 'meta', (t.date || '') + (t.outcome ? ' · ' + t.outcome : '')
+        + ' · ' + t.modules.length + ' ' + plural(t.modules.length, 'модуль', 'модуля', 'модулей')));
+      if (t.files.length) li.appendChild(el('div', 'files', t.files.join(' · ')));
+      li.onclick = function () {
+        taskOn = (taskOn === ti) ? -1 : ti;
+        renderTasks(); draw();
+      };
+      ul.appendChild(li);
+    });
+    tasksBox.appendChild(ul);
+  }
+
+  function renderAbout() {
+    var m = DATA.meta, box = document.getElementById('about'), lines = [];
+    lines.push(m.hasGit
+      ? 'Просмотрено коммитов: ' + m.commitsScanned + ' (из последних ' + m.commitsRequested + ').'
+      : 'git в проекте не найден — связи только из истории задач.');
+    if (m.bulkSkipped) {
+      lines.push('Массовых коммитов пропущено: ' + m.bulkSkipped
+        + ' (больше ' + m.bulkLimit + ' файлов — такие связывают всё со всем и связей не доказывают).');
+    }
+    lines.push('Файлы схлопнуты в модули до ' + m.depth + '-го уровня пути.');
+    if (m.nodesDropped) {
+      lines.push('Модулей на карте: ' + (m.nodesTotal - m.nodesDropped) + ' из ' + m.nodesTotal
+        + ' — самые тихие убраны, чтобы карта не тормозила (ключ --max-nodes покажет все).');
+    }
+    if (m.linksDropped) lines.push('Самых слабых связей не попало на карту: ' + m.linksDropped + '.');
+    if (m.hideKit) lines.push('Папка .claude/ скрыта как служебная (ключ --with-kit покажет её).');
+    if (m.kitForced) lines.push('Папка .claude/ показана: без неё карта осталась бы пустой.');
+    lines.forEach(function (t) { box.appendChild(el('p', 'empty', t)); });
+
+    var note = el('div', 'note');
+    note.innerHTML = '<b>Как читать.</b> Кружок — модуль, размер — как часто его правят. '
+      + 'Линия — модули меняли вместе: серая — так вышло по коммитам, оранжевая — их свела общая задача кита. '
+      + 'Это карта того, как проект правят, а не схема импортов: связь тут означает «трогают вместе», и обычно это честнее.';
+    box.appendChild(note);
+
+    var lg = el('div', 'legend');
+    groups.slice(0, 12).forEach(function (g) {
+      var s = el('span');
+      var i = el('i'); i.style.background = colorOf(g);
+      s.appendChild(i); s.appendChild(el('span', null, g));
+      lg.appendChild(s);
+    });
+    box.appendChild(lg);
+  }
+
+  // -------- контролы --------
+  var minwEl = document.getElementById('minw'), minwv = document.getElementById('minwv');
+  var linkCount = document.getElementById('linkcount');
+  function refreshLinks() {
+    live = activeLinks();
+    linkCount.textContent = live.length + ' ' + plural(live.length, 'связь', 'связи', 'связей');
+    alpha = Math.max(alpha, 0.5);
+    if (picked >= 0) select(picked); else draw();
+  }
+  minwEl.oninput = function () { state.minw = +minwEl.value; minwv.textContent = minwEl.value; refreshLinks(); };
+  document.getElementById('useGit').onchange = function () { state.useGit = this.checked; refreshLinks(); };
+  document.getElementById('useTask').onchange = function () { state.useTask = this.checked; refreshLinks(); };
+  document.getElementById('q').oninput = function () { query = this.value.trim().toLowerCase(); draw(); };
+
+  document.getElementById('sub').textContent =
+    nodes.length + ' ' + plural(nodes.length, 'модуль', 'модуля', 'модулей')
+    + ' · ' + DATA.links.length + ' ' + plural(DATA.links.length, 'связь', 'связи', 'связей')
+    + ' · ' + DATA.tasks.length + ' ' + plural(DATA.tasks.length, 'задача', 'задачи', 'задач') + ' из истории';
+  document.getElementById('gen').textContent = DATA.generated || '';
+
+  window.addEventListener('resize', resize);
+  resize();
+  seed();
+  for (var s = 0; s < 260; s++) step();   // разложить до первого кадра, чтобы не мельтешило
+  fit();
+  renderTasks();
+  renderAbout();
+  refreshLinks();
+  tick();
+})();
+</script>
+</body>
+</html>
