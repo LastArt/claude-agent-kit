@@ -39,6 +39,12 @@
     margin:22px 0 8px;font-weight:700}
   aside h2:first-child{margin-top:0}
 
+  .seg{display:flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:#fff}
+  .seg button{flex:1;padding:7px 4px;border:0;background:transparent;color:var(--muted);
+    font:600 13.5px inherit;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#fff}
+  .seg button+button{border-left:1px solid var(--border)}
+
   .field{display:block;margin:8px 0}
   .field input[type=search]{width:100%;padding:7px 10px;border:1px solid var(--border);
     border-radius:8px;background:#fff;font:14px inherit;color:var(--text)}
@@ -100,6 +106,13 @@
     <h2>Поиск</h2>
     <label class="field"><input type="search" id="q" placeholder="модуль или путь" autocomplete="off"></label>
 
+    <h2>Уровень</h2>
+    <div class="seg">
+      <button id="lvModule" class="on">папки</button>
+      <button id="lvFile">файлы</button>
+    </div>
+    <p class="empty" id="lvHint"></p>
+
     <h2>Что показывать</h2>
     <label class="check"><input type="checkbox" id="useGit" checked> связи из коммитов</label>
     <label class="check"><input type="checkbox" id="useTask" checked> связи из задач кита</label>
@@ -125,30 +138,151 @@
 (function () {
   'use strict';
   var DATA = JSON.parse(document.getElementById('data').textContent);
-  var nodes = DATA.nodes.map(function (n) {
-    return { id: n.id, group: n.group, commits: n.commits, files: n.files,
-      first: n.first, last: n.last, tasks: n.tasks || [],
-      x: 0, y: 0, vx: 0, vy: 0, fixed: false, r: 0 };
-  });
-  var byId = {};
-  nodes.forEach(function (n, i) { byId[n.id] = i; });
 
-  var links = [];
-  DATA.links.forEach(function (l) {
-    var a = byId[l.source], b = byId[l.target];
-    if (a === undefined || b === undefined) return;
-    links.push({ a: a, b: b, git: l.git || 0, task: l.task || 0 });
-  });
+  // Карта живёт на двух уровнях: папки (общая картина) и файлы (что именно правят).
+  // Оба собраны заранее и лежат в самой странице — переключение мгновенное и офлайновое.
+  var level = 'module';
+  var nodes = [], links = [], byId = {}, groups = [], maxScore = 1;
+  var alpha = 1, picked = -1, hovered = -1, query = '', taskOn = -1;
+  var state = { useGit: true, useTask: true, minw: 1 };
+  var live = [];
 
-  // Радиус — от числа коммитов: заметно, но без гигантов, которые съедают экран.
-  var maxC = 1;
-  nodes.forEach(function (n) { if (n.commits > maxC) maxC = n.commits; });
-  nodes.forEach(function (n) { n.r = 7 + 17 * Math.sqrt(n.commits / maxC); });
+  var cv = document.getElementById('cv');
+  var ctx = cv.getContext('2d');
+  var view = { x: 0, y: 0, k: 1 };
+  var W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
 
-  // Цвет — по верхней папке. Оттенки берём вокруг фирменного оранжевого, чтобы карта
-  // осталась в палитре набора и не превратилась в новогоднюю гирлянду.
-  var groups = [];
-  nodes.forEach(function (n) { if (groups.indexOf(n.group) < 0) groups.push(n.group); });
+  // -------- тип файла --------
+  // Форма узла говорит, что это за файл, цвет — из какой он папки. Иконки нарисованы здесь же
+  // примитивами: никаких сторонних наборов, лицензий и чужих логотипов — только геометрия.
+  var CODE = ['js','mjs','cjs','jsx','ts','tsx','py','rb','go','rs','java','kt','kts','php','cs','cpp','cc','c','h','hpp','swift','scala','dart','lua','ex','exs','vue','svelte'];
+  var SHELL = ['sh','bash','zsh','ps1','psm1','bat','cmd','fish'];
+  var DATAF = ['json','yaml','yml','toml','ini','xml','csv','tsv','env','properties','plist'];
+  var DOC = ['md','markdown','txt','rst','adoc','pdf','doc','docx'];
+  var MARKUP = ['html','htm','xhtml','ejs','hbs','pug','jinja','tmpl','tpl'];
+  var STYLE = ['css','scss','sass','less','styl'];
+  var IMAGE = ['png','jpg','jpeg','gif','svg','webp','ico','bmp','avif'];
+  var DB = ['sql','db','sqlite','sqlite3','prisma'];
+  var CONFIGNAMES = ['dockerfile','makefile','gitignore','gitattributes','editorconfig','npmrc','nvmrc','browserslist','license','licence','codeowners'];
+
+  function typeOf(id) {
+    if (level === 'module') return 'folder';
+    var name = id.split('/').pop().toLowerCase();
+    // Тесты называют по-разному в каждом языке: user.test.ts, test_export.py, ExportSpec.kt,
+    // да и просто лежат в tests/. Ловим и папку, и все ходовые формы имени.
+    var base = name.replace(/\.[^.]+$/, '');
+    if (/(^|\/)(tests?|__tests__|spec|specs)\//.test(id)
+      || /(^|[._-])(test|tests|spec)([._-]|$)/.test(base)) return 'test';
+    var bare = name.charAt(0) === '.' ? name.slice(1) : name;
+    if (CONFIGNAMES.indexOf(bare.split('.')[0]) >= 0 || name.charAt(0) === '.') return 'config';
+    var dot = name.lastIndexOf('.');
+    var ext = dot > 0 ? name.slice(dot + 1) : '';
+    if (CODE.indexOf(ext) >= 0) return 'code';
+    if (SHELL.indexOf(ext) >= 0) return 'shell';
+    if (DATAF.indexOf(ext) >= 0) return 'data';
+    if (DOC.indexOf(ext) >= 0) return 'doc';
+    if (MARKUP.indexOf(ext) >= 0) return 'markup';
+    if (STYLE.indexOf(ext) >= 0) return 'style';
+    if (IMAGE.indexOf(ext) >= 0) return 'image';
+    if (DB.indexOf(ext) >= 0) return 'db';
+    return 'other';
+  }
+  var TYPE_RU = {
+    folder: 'папка', code: 'код', shell: 'скрипт', data: 'данные', doc: 'текст',
+    markup: 'разметка', style: 'стили', image: 'картинка', db: 'база', test: 'тест',
+    config: 'настройки', other: 'файл'
+  };
+
+  // -------- фигуры --------
+  // Лист бумаги с загнутым уголком — файл. Папка — прямоугольник с язычком.
+  function sheetPath(cx, cy, s) {
+    var w = s * 1.55, h = s * 1.9, fold = s * 0.5;
+    var x = cx - w / 2, y = cy - h / 2, r = s * 0.16;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - fold, y);
+    ctx.lineTo(x + w, y + fold);
+    ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+  function folderPath(cx, cy, s) {
+    var w = s * 1.95, h = s * 1.5, r = s * 0.16, tab = w * 0.42, lip = s * 0.26;
+    var x = cx - w / 2, y = cy - h / 2;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + tab, y);
+    ctx.lineTo(x + tab + s * 0.22, y + lip);
+    ctx.lineTo(x + w - r, y + lip); ctx.quadraticCurveTo(x + w, y + lip, x + w, y + lip + r);
+    ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  // Глиф внутри листа: белая геометрия, которая читается даже мелкой.
+  function glyph(kind, cx, cy, s) {
+    ctx.lineWidth = Math.max(0.6, s * 0.15);
+    ctx.strokeStyle = 'rgba(255,255,255,.96)';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    var u = s * 0.45;
+    ctx.beginPath();
+    if (kind === 'code') {
+      ctx.moveTo(cx - u * 0.25, cy - u * 0.7); ctx.lineTo(cx - u * 0.85, cy); ctx.lineTo(cx - u * 0.25, cy + u * 0.7);
+      ctx.moveTo(cx + u * 0.25, cy - u * 0.7); ctx.lineTo(cx + u * 0.85, cy); ctx.lineTo(cx + u * 0.25, cy + u * 0.7);
+    } else if (kind === 'data') {
+      ctx.moveTo(cx - u * 0.15, cy - u * 0.8); ctx.quadraticCurveTo(cx - u * 0.75, cy - u * 0.8, cx - u * 0.75, cy);
+      ctx.quadraticCurveTo(cx - u * 0.75, cy + u * 0.8, cx - u * 0.15, cy + u * 0.8);
+      ctx.moveTo(cx + u * 0.15, cy - u * 0.8); ctx.quadraticCurveTo(cx + u * 0.75, cy - u * 0.8, cx + u * 0.75, cy);
+      ctx.quadraticCurveTo(cx + u * 0.75, cy + u * 0.8, cx + u * 0.15, cy + u * 0.8);
+    } else if (kind === 'shell') {
+      ctx.moveTo(cx - u * 0.75, cy - u * 0.6); ctx.lineTo(cx - u * 0.15, cy - u * 0.05); ctx.lineTo(cx - u * 0.75, cy + u * 0.5);
+      ctx.moveTo(cx + u * 0.05, cy + u * 0.6); ctx.lineTo(cx + u * 0.8, cy + u * 0.6);
+    } else if (kind === 'markup') {
+      ctx.moveTo(cx - u * 0.35, cy - u * 0.65); ctx.lineTo(cx - u * 0.9, cy); ctx.lineTo(cx - u * 0.35, cy + u * 0.65);
+      ctx.moveTo(cx + u * 0.2, cy - u * 0.75); ctx.lineTo(cx - u * 0.05, cy + u * 0.75);
+      ctx.moveTo(cx + u * 0.45, cy - u * 0.65); ctx.lineTo(cx + u * 0.9, cy); ctx.lineTo(cx + u * 0.45, cy + u * 0.65);
+    } else if (kind === 'style') {
+      ctx.moveTo(cx, cy - u * 0.85);
+      ctx.quadraticCurveTo(cx + u * 0.8, cy + u * 0.15, cx, cy + u * 0.8);
+      ctx.quadraticCurveTo(cx - u * 0.8, cy + u * 0.15, cx, cy - u * 0.85);
+    } else if (kind === 'image') {
+      ctx.rect(cx - u * 0.85, cy - u * 0.7, u * 1.7, u * 1.4);
+      ctx.moveTo(cx - u * 0.8, cy + u * 0.4); ctx.lineTo(cx - u * 0.2, cy - u * 0.2);
+      ctx.lineTo(cx + u * 0.3, cy + u * 0.3); ctx.lineTo(cx + u * 0.55, cy + u * 0.05);
+      ctx.lineTo(cx + u * 0.8, cy + u * 0.4);
+    } else if (kind === 'db') {
+      ctx.ellipse(cx, cy - u * 0.5, u * 0.72, u * 0.28, 0, 0, Math.PI * 2);
+      ctx.moveTo(cx - u * 0.72, cy - u * 0.5); ctx.lineTo(cx - u * 0.72, cy + u * 0.45);
+      ctx.quadraticCurveTo(cx, cy + u, cx + u * 0.72, cy + u * 0.45);
+      ctx.lineTo(cx + u * 0.72, cy - u * 0.5);
+    } else if (kind === 'test') {
+      ctx.moveTo(cx - u * 0.35, cy - u * 0.75); ctx.lineTo(cx - u * 0.35, cy - u * 0.1);
+      ctx.lineTo(cx - u * 0.75, cy + u * 0.7); ctx.lineTo(cx + u * 0.75, cy + u * 0.7);
+      ctx.lineTo(cx + u * 0.35, cy - u * 0.1); ctx.lineTo(cx + u * 0.35, cy - u * 0.75);
+      ctx.moveTo(cx - u * 0.5, cy - u * 0.75); ctx.lineTo(cx + u * 0.5, cy - u * 0.75);
+    } else if (kind === 'config') {
+      ctx.arc(cx, cy, u * 0.4, 0, Math.PI * 2);
+      for (var a = 0; a < 6; a++) {
+        var an = a * Math.PI / 3;
+        ctx.moveTo(cx + Math.cos(an) * u * 0.58, cy + Math.sin(an) * u * 0.58);
+        ctx.lineTo(cx + Math.cos(an) * u * 0.92, cy + Math.sin(an) * u * 0.92);
+      }
+    } else if (kind === 'folder') {
+      ctx.moveTo(cx - u * 0.55, cy + u * 0.2); ctx.lineTo(cx + u * 0.55, cy + u * 0.2);
+    } else {
+      for (var i = -1; i <= 1; i++) {
+        ctx.moveTo(cx - u * 0.7, cy + i * u * 0.5);
+        ctx.lineTo(cx + (i === 1 ? u * 0.15 : u * 0.7), cy + i * u * 0.5);
+      }
+    }
+    ctx.stroke();
+  }
+
+  // -------- цвет --------
+  // Оттенки вокруг фирменного оранжевого: карта остаётся в палитре набора и не превращается
+  // в новогоднюю гирлянду. Цвет — это папка, из которой файл.
   var HUES = [18, 200, 145, 275, 45, 0, 235, 95, 320, 170];
   function colorOf(group, alpha) {
     var i = groups.indexOf(group);
@@ -157,30 +291,51 @@
     return 'hsla(' + h + ',52%,' + l + '%,' + (alpha === undefined ? 1 : alpha) + ')';
   }
 
-  var cv = document.getElementById('cv');
-  var ctx = cv.getContext('2d');
-  var view = { x: 0, y: 0, k: 1 };
-  var W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+  // -------- загрузка уровня --------
+  function loadLevel(name) {
+    level = name;
+    var lv = DATA.levels[name];
+    nodes = lv.nodes.map(function (n) {
+      return { id: n.id, group: n.group, commits: n.commits, files: n.files, score: n.score,
+        first: n.first, last: n.last, tasks: n.tasks || [],
+        x: 0, y: 0, vx: 0, vy: 0, fixed: false, r: 0, type: '' };
+    });
+    byId = {};
+    nodes.forEach(function (n, i) { byId[n.id] = i; });
 
-  function resize() {
-    var rect = cv.getBoundingClientRect();
-    W = rect.width; H = rect.height;
-    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
-    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    draw();
+    groups = [];
+    nodes.forEach(function (n) { if (groups.indexOf(n.group) < 0) groups.push(n.group); });
+
+    maxScore = 1;
+    nodes.forEach(function (n) { if (n.score > maxScore) maxScore = n.score; });
+    nodes.forEach(function (n) {
+      n.r = 8 + 16 * Math.sqrt(n.score / maxScore);   // размер = важность узла
+      n.type = typeOf(n.id);
+    });
+
+    links = [];
+    lv.links.forEach(function (l) {
+      var a = byId[l.source], b = byId[l.target];
+      if (a === undefined || b === undefined) return;
+      links.push({ a: a, b: b, git: l.git || 0, task: l.task || 0 });
+    });
+
+    picked = -1; hovered = -1; taskOn = -1;
+    live = activeLinks();   // строго до step(): иначе раскладка пойдёт по связям прошлого уровня
+    seed();
+    for (var s = 0; s < 260; s++) step();
+    refreshLinks();
+    select(-1);
+    renderTasks();
+    renderHead();
+    renderAbout();
+    fit();
   }
-
-  // -------- раскладка --------
-  // Обычная силовая укладка: узлы отталкиваются, связи стягивают, центр придерживает.
-  // Узлов на карте сотни, не тысячи, поэтому честный перебор пар допустим и код остаётся
-  // читаемым — никаких деревьев Барнса-Хата.
-  var alpha = 1;
-  var state = { useGit: true, useTask: true, minw: 1 };
 
   function weightOf(l) {
     var w = 0;
     if (state.useGit) w += l.git;
-    if (state.useTask) w += l.task * 2;   // задача — осознанная связь, весит больше случайного соседства
+    if (state.useTask) w += l.task * 2;   // задача — осознанная связь, весит больше соседства
     return w;
   }
   function activeLinks() {
@@ -192,8 +347,6 @@
     return res;
   }
 
-  var live = activeLinks();
-
   function seed() {
     var R = Math.min(W, H) * 0.36 || 260;
     nodes.forEach(function (n, i) {
@@ -201,11 +354,15 @@
       var rr = R * (0.35 + 0.65 * Math.sqrt((i % 7) / 7 + 0.1));
       n.x = Math.cos(a) * rr; n.y = Math.sin(a) * rr; n.vx = 0; n.vy = 0;
     });
+    alpha = 1;
   }
 
+  // -------- раскладка --------
+  // Обычная силовая укладка: узлы отталкиваются, связи стягивают, центр придерживает.
+  // Узлов сотни, не тысячи (потолок ставит сборщик), поэтому честный перебор пар допустим
+  // и код остаётся читаемым — никаких деревьев Барнса-Хата.
   function step() {
     var i, j, n, m, dx, dy, d2, d, f;
-    // отталкивание
     for (i = 0; i < nodes.length; i++) {
       n = nodes[i];
       for (j = i + 1; j < nodes.length; j++) {
@@ -220,18 +377,16 @@
         m.vx += dx / d * f; m.vy += dy / d * f;
       }
     }
-    // связи
     for (i = 0; i < live.length; i++) {
       n = nodes[live[i].l.a]; m = nodes[live[i].l.b];
       dx = m.x - n.x; dy = m.y - n.y;
       d = Math.sqrt(dx * dx + dy * dy) || 1;
-      var rest = 90 + n.r + m.r;
+      var rest = 92 + n.r + m.r;
       var pull = Math.min(0.9, 0.06 + live[i].w * 0.012);
       f = (d - rest) * pull * 0.12;
       n.vx += dx / d * f; n.vy += dy / d * f;
       m.vx -= dx / d * f; m.vy -= dy / d * f;
     }
-    // центр и трение
     for (i = 0; i < nodes.length; i++) {
       n = nodes[i];
       n.vx -= n.x * 0.0022; n.vy -= n.y * 0.0022;
@@ -243,21 +398,21 @@
   }
 
   // -------- отрисовка --------
-  var picked = -1, hovered = -1, query = '', taskOn = -1;
-
-  function matches(n) {
-    if (!query) return true;
-    return n.id.toLowerCase().indexOf(query) >= 0;
-  }
+  function matches(n) { return !query || n.id.toLowerCase().indexOf(query) >= 0; }
   function inTask(i) {
     if (taskOn < 0) return false;
     var t = DATA.tasks[taskOn];
-    return t && t.modules.indexOf(nodes[i].id) >= 0;
+    return !!t && (t[level] || []).indexOf(nodes[i].id) >= 0;
   }
   function dimmed(i) {
     if (taskOn >= 0) return !inTask(i);
     if (query) return !matches(nodes[i]);
     return false;
+  }
+  function shortName(id) {
+    if (level === 'module') return id.length > 28 ? '…' + id.slice(-27) : id;
+    var name = id.split('/').pop();
+    return name.length > 24 ? name.slice(0, 23) + '…' : name;
   }
 
   function draw() {
@@ -267,7 +422,6 @@
     ctx.scale(view.k, view.k);
 
     var i, l, n, m;
-    // связи
     for (i = 0; i < live.length; i++) {
       l = live[i].l; n = nodes[l.a]; m = nodes[l.b];
       var faded = dimmed(l.a) || dimmed(l.b);
@@ -277,36 +431,41 @@
       ctx.moveTo(n.x, n.y); ctx.lineTo(m.x, m.y);
       ctx.lineWidth = Math.min(5, 0.6 + live[i].w * 0.35);
       ctx.strokeStyle = near ? 'rgba(204,95,46,.75)'
-        : live[i].l.task > 0 ? 'rgba(204,95,46,.28)' : 'rgba(107,100,89,.22)';
+        : l.task > 0 ? 'rgba(204,95,46,.28)' : 'rgba(107,100,89,.22)';
       ctx.stroke();
     }
-    // узлы
+
     for (i = 0; i < nodes.length; i++) {
       n = nodes[i];
       var faint = dimmed(i);
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-      ctx.fillStyle = colorOf(n.group, faint ? 0.16 : 0.92);
-      ctx.fill();
-      if (i === picked || i === hovered) {
-        ctx.lineWidth = 2.5; ctx.strokeStyle = '#1f1e1a'; ctx.stroke();
-      } else if (inTask(i)) {
-        ctx.lineWidth = 2; ctx.strokeStyle = '#cc5f2e'; ctx.stroke();
+      var onScreen = n.r * view.k;
+
+      if (onScreen < 4) {
+        // Мельче четырёх пикселей иконка всё равно не читается — рисуем точку и не тратим кадр.
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+        ctx.fillStyle = colorOf(n.group, faint ? 0.16 : 0.92); ctx.fill();
+      } else {
+        if (level === 'module') folderPath(n.x, n.y, n.r); else sheetPath(n.x, n.y, n.r);
+        ctx.fillStyle = colorOf(n.group, faint ? 0.16 : 0.94);
+        ctx.fill();
+        if (i === picked || i === hovered) { ctx.lineWidth = 2.5 / view.k; ctx.strokeStyle = '#1f1e1a'; ctx.stroke(); }
+        else if (inTask(i)) { ctx.lineWidth = 2 / view.k; ctx.strokeStyle = '#cc5f2e'; ctx.stroke(); }
+        if (!faint && onScreen > 7) glyph(n.type, n.x, n.y + (level === 'module' ? n.r * 0.1 : 0), n.r);
       }
-      // подпись — только там, где она читается: у крупных узлов, у выбранного, при увеличении
-      var label = n.r * view.k > 14 || i === picked || i === hovered || view.k > 1.6;
+
+      var label = onScreen > 13 || i === picked || i === hovered || view.k > 1.6;
       if (label && !faint) {
-        var text = n.id.length > 28 ? '…' + n.id.slice(-27) : n.id;
+        var text = shortName(n.id);
         // Размер держим в ЭКРАННЫХ пикселях: холст уже отмасштабирован, поэтому делим на view.k.
-        // Иначе подпись уезжает вместе с геометрией и на отдалении превращается в пыль.
         var fs = 12 / view.k;
         ctx.font = '600 ' + fs + 'px ui-monospace,Consolas,monospace';
         ctx.textAlign = 'center'; ctx.textBaseline = 'top';
         var tw = ctx.measureText(text).width;
+        var top = n.y + n.r * (level === 'module' ? 0.85 : 1.05) + fs * 0.25;
         ctx.fillStyle = 'rgba(240,238,230,.78)';
-        ctx.fillRect(n.x - tw / 2 - fs * 0.25, n.y + n.r + fs * 0.2, tw + fs * 0.5, fs * 1.2);
+        ctx.fillRect(n.x - tw / 2 - fs * 0.25, top, tw + fs * 0.5, fs * 1.2);
         ctx.fillStyle = '#1f1e1a';
-        ctx.fillText(text, n.x, n.y + n.r + fs * 0.3);
+        ctx.fillText(text, n.x, top + fs * 0.1);
       }
     }
     ctx.restore();
@@ -315,6 +474,14 @@
   function tick() {
     if (alpha > 0.004) { step(); draw(); }
     requestAnimationFrame(tick);
+  }
+
+  function resize() {
+    var rect = cv.getBoundingClientRect();
+    W = rect.width; H = rect.height;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    draw();
   }
 
   // -------- взаимодействие --------
@@ -334,15 +501,9 @@
   var drag = null, panning = null;
   cv.addEventListener('mousedown', function (e) {
     var rect = cv.getBoundingClientRect();
-    var px = e.clientX - rect.left, py = e.clientY - rect.top;
-    var hit = nodeAt(px, py);
-    if (hit >= 0) {
-      drag = hit; nodes[hit].fixed = true;
-      select(hit);
-    } else {
-      panning = { x: e.clientX - view.x, y: e.clientY - view.y };
-      cv.classList.add('dragging');
-    }
+    var hit = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
+    if (hit >= 0) { drag = hit; nodes[hit].fixed = true; select(hit); }
+    else { panning = { x: e.clientX - view.x, y: e.clientY - view.y }; cv.classList.add('dragging'); }
   });
   window.addEventListener('mousemove', function (e) {
     var rect = cv.getBoundingClientRect();
@@ -358,9 +519,7 @@
     var h = nodeAt(px, py);
     if (h !== hovered) { hovered = h; cv.style.cursor = h >= 0 ? 'pointer' : 'grab'; draw(); }
   });
-  window.addEventListener('mouseup', function () {
-    drag = null; panning = null; cv.classList.remove('dragging');
-  });
+  window.addEventListener('mouseup', function () { drag = null; panning = null; cv.classList.remove('dragging'); });
   cv.addEventListener('dblclick', function (e) {
     var rect = cv.getBoundingClientRect();
     var hit = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
@@ -371,8 +530,7 @@
     var rect = cv.getBoundingClientRect();
     var px = e.clientX - rect.left, py = e.clientY - rect.top;
     var before = toWorld(px, py);
-    var k = view.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12);
-    view.k = Math.max(0.15, Math.min(6, k));
+    view.k = Math.max(0.15, Math.min(6, view.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
     var after = toWorld(px, py);
     view.x += (after.x - before.x) * view.k;
     view.y += (after.y - before.y) * view.k;
@@ -415,20 +573,26 @@
   function select(i) {
     picked = i;
     pickBox.innerHTML = '';
-    if (i < 0) { pickBox.appendChild(el('p', 'empty', 'Кликните по кружку на карте.')); draw(); return; }
+    if (i < 0) {
+      pickBox.appendChild(el('p', 'empty', level === 'module'
+        ? 'Кликните по папке на карте.' : 'Кликните по файлу на карте.'));
+      draw();
+      return;
+    }
     var n = nodes[i];
     var card = el('div', 'card');
     card.appendChild(el('div', 'path', n.id));
     var dl = el('dl');
     function add(k, v) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); }
+    add('тип', TYPE_RU[n.type] || 'файл');
+    add('важность', String(n.score));
     add('коммитов', String(n.commits));
-    add('файлов', String(n.files));
+    if (level === 'module') add('файлов', String(n.files));
     if (n.first) add('правился', n.first === n.last ? n.last : n.first + ' … ' + n.last);
     if (n.tasks.length) add('в задачах', String(n.tasks.length));
     card.appendChild(dl);
     pickBox.appendChild(card);
 
-    // соседи — с кем этот модуль ходит парой чаще всего
     var near = [];
     for (var j = 0; j < live.length; j++) {
       var l = live[j].l;
@@ -437,7 +601,7 @@
     }
     near.sort(function (a, b) { return b.w - a.w; });
     if (!near.length) {
-      pickBox.appendChild(el('p', 'empty', 'Связей при текущих настройках нет — попробуйте ослабить фильтр.'));
+      pickBox.appendChild(el('p', 'empty', 'Связей при текущих настройках нет — ослабьте фильтр.'));
     } else {
       var ul = el('ul', 'list');
       near.slice(0, 8).forEach(function (x) {
@@ -445,15 +609,12 @@
         li.appendChild(el('div', null, nodes[x.i].id));
         li.appendChild(el('div', 'meta', 'вместе в ' + x.w + ' ' + plural(x.w, 'случае', 'случаях', 'случаях')
           + (x.task ? ' · есть общая задача' : '')));
-        li.onclick = function () { select(x.i); centerOn(x.i); };
+        li.onclick = function () { select(x.i); view.x = -nodes[x.i].x * view.k; view.y = -nodes[x.i].y * view.k; draw(); };
         ul.appendChild(li);
       });
       pickBox.appendChild(ul);
     }
     draw();
-  }
-  function centerOn(i) {
-    view.x = -nodes[i].x * view.k; view.y = -nodes[i].y * view.k; draw();
   }
 
   var tasksBox = document.getElementById('tasks');
@@ -468,21 +629,39 @@
     DATA.tasks.forEach(function (t, ti) {
       var li = el('li');
       if (ti === taskOn) li.className = 'on';
+      var hit = (t[level] || []).length;
       li.appendChild(el('div', null, t.title));
       li.appendChild(el('div', 'meta', (t.date || '') + (t.outcome ? ' · ' + t.outcome : '')
-        + ' · ' + t.modules.length + ' ' + plural(t.modules.length, 'модуль', 'модуля', 'модулей')));
+        + ' · ' + hit + ' ' + (level === 'module'
+          ? plural(hit, 'папка', 'папки', 'папок')
+          : plural(hit, 'файл', 'файла', 'файлов')) + ' на карте'));
       if (t.files.length) li.appendChild(el('div', 'files', t.files.join(' · ')));
-      li.onclick = function () {
-        taskOn = (taskOn === ti) ? -1 : ti;
-        renderTasks(); draw();
-      };
+      li.onclick = function () { taskOn = (taskOn === ti) ? -1 : ti; renderTasks(); draw(); };
       ul.appendChild(li);
     });
     tasksBox.appendChild(ul);
   }
 
+  function renderHead() {
+    var lv = DATA.levels[level];
+    document.getElementById('sub').textContent =
+      nodes.length + ' ' + (level === 'module'
+        ? plural(nodes.length, 'папка', 'папки', 'папок')
+        : plural(nodes.length, 'файл', 'файла', 'файлов'))
+      + ' · ' + links.length + ' ' + plural(links.length, 'связь', 'связи', 'связей')
+      + ' · ' + DATA.tasks.length + ' ' + plural(DATA.tasks.length, 'задача', 'задачи', 'задач') + ' из истории';
+    document.getElementById('lvHint').textContent = level === 'module'
+      ? 'Папки: общая картина, с чего смотреть.'
+      : (lv.dropped
+        ? 'Файлы: ' + nodes.length + ' самых важных из ' + lv.total + ' (важность = как часто правят + сколько задач прошло).'
+        : 'Файлы: все ' + lv.total + ' — важность = как часто правят + сколько задач прошло.');
+    document.getElementById('lvModule').className = level === 'module' ? 'on' : '';
+    document.getElementById('lvFile').className = level === 'file' ? 'on' : '';
+  }
+
   function renderAbout() {
     var m = DATA.meta, box = document.getElementById('about'), lines = [];
+    box.innerHTML = '';
     lines.push(m.hasGit
       ? 'Просмотрено коммитов: ' + m.commitsScanned + ' (из последних ' + m.commitsRequested + ').'
       : 'git в проекте не найден — связи только из истории задач.');
@@ -490,20 +669,20 @@
       lines.push('Массовых коммитов пропущено: ' + m.bulkSkipped
         + ' (больше ' + m.bulkLimit + ' файлов — такие связывают всё со всем и связей не доказывают).');
     }
-    lines.push('Файлы схлопнуты в модули до ' + m.depth + '-го уровня пути.');
-    if (m.nodesDropped) {
-      lines.push('Модулей на карте: ' + (m.nodesTotal - m.nodesDropped) + ' из ' + m.nodesTotal
-        + ' — самые тихие убраны, чтобы карта не тормозила (ключ --max-nodes покажет все).');
-    }
-    if (m.linksDropped) lines.push('Самых слабых связей не попало на карту: ' + m.linksDropped + '.');
+    lines.push('Папки собраны до ' + m.depth + '-го уровня пути.');
+    var lm = DATA.levels.module, lf = DATA.levels.file;
+    if (lm.dropped) lines.push('Папок на карте: ' + lm.nodes.length + ' из ' + lm.total + ' (ключ --max-nodes покажет все).');
+    if (lf.dropped) lines.push('Файлов на карте: ' + lf.nodes.length + ' из ' + lf.total + ' — самые важные (ключ --files покажет больше).');
+    if (lm.linksDropped || lf.linksDropped) lines.push('Часть самых слабых связей не поместилась на карту.');
     if (m.hideKit) lines.push('Папка .claude/ скрыта как служебная (ключ --with-kit покажет её).');
     if (m.kitForced) lines.push('Папка .claude/ показана: без неё карта осталась бы пустой.');
     lines.forEach(function (t) { box.appendChild(el('p', 'empty', t)); });
 
     var note = el('div', 'note');
-    note.innerHTML = '<b>Как читать.</b> Кружок — модуль, размер — как часто его правят. '
-      + 'Линия — модули меняли вместе: серая — так вышло по коммитам, оранжевая — их свела общая задача кита. '
-      + 'Это карта того, как проект правят, а не схема импортов: связь тут означает «трогают вместе», и обычно это честнее.';
+    note.innerHTML = '<b>Как читать.</b> Значок — папка или файл, размер — важность: как часто правят '
+      + 'и сколько задач через него прошло. Форма значка говорит про тип файла, цвет — про папку, в которой он лежит. '
+      + 'Линия значит «меняли вместе»: серая — так вышло по коммитам, оранжевая — их свела общая задача кита. '
+      + 'Это карта того, как проект правят, а не схема импортов — и обычно она честнее.';
     box.appendChild(note);
 
     var lg = el('div', 'legend');
@@ -529,21 +708,14 @@
   document.getElementById('useGit').onchange = function () { state.useGit = this.checked; refreshLinks(); };
   document.getElementById('useTask').onchange = function () { state.useTask = this.checked; refreshLinks(); };
   document.getElementById('q').oninput = function () { query = this.value.trim().toLowerCase(); draw(); };
+  document.getElementById('lvModule').onclick = function () { if (level !== 'module') loadLevel('module'); };
+  document.getElementById('lvFile').onclick = function () { if (level !== 'file') loadLevel('file'); };
 
-  document.getElementById('sub').textContent =
-    nodes.length + ' ' + plural(nodes.length, 'модуль', 'модуля', 'модулей')
-    + ' · ' + DATA.links.length + ' ' + plural(DATA.links.length, 'связь', 'связи', 'связей')
-    + ' · ' + DATA.tasks.length + ' ' + plural(DATA.tasks.length, 'задача', 'задачи', 'задач') + ' из истории';
   document.getElementById('gen').textContent = DATA.generated || '';
-
   window.addEventListener('resize', resize);
+
   resize();
-  seed();
-  for (var s = 0; s < 260; s++) step();   // разложить до первого кадра, чтобы не мельтешило
-  fit();
-  renderTasks();
-  renderAbout();
-  refreshLinks();
+  loadLevel('module');   // renderAbout вызывается внутри — легенда всегда под текущий уровень
   tick();
 })();
 </script>

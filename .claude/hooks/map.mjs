@@ -18,6 +18,7 @@
  * Ключи:
  *   --commits N     сколько последних коммитов смотреть (по умолчанию 400)
  *   --max-nodes N   сколько самых живых модулей оставить на карте (по умолчанию 250)
+ *   --files N       сколько самых важных файлов оставить на файловом уровне (по умолчанию 200)
  *   --depth K       до какого уровня пути схлопывать файлы в модуль (по умолчанию 2)
  *   --bulk N        коммит, тронувший больше N файлов, связей не даёт (по умолчанию 25):
  *                   массовый рефакторинг и релизные прогоны иначе связывают всё со всем
@@ -58,6 +59,7 @@ const DEPTH = Math.max(1, opt('--depth', 2));
 const BULK = Math.max(2, opt('--bulk', 25));
 const WITH_KIT = flag('--with-kit');
 const MAX_NODES = Math.max(10, opt('--max-nodes', 250));
+const MAX_FILES = Math.max(10, opt('--files', 200));
 const OUT = path.resolve(PROJECT_ROOT, optStr('--out', path.join(KIT_DIR, 'map.html')));
 
 const out = (s = '') => process.stdout.write(s + '\n');
@@ -77,6 +79,10 @@ const IGNORED = [
   /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|Cargo\.lock)$/,
 ];
 const isIgnored = (f) => IGNORED.some((re) => re.test(f));
+
+// Пути из планов приходят как их написал человек: то с "./", то с обратными слэшами.
+// Приводим к одному виду, иначе один и тот же файл раздвоится на карте.
+const normPath = (p) => p.replace(/^\.\//, '').replace(/\\/g, '/');
 
 // Модуль = первые DEPTH сегментов пути. Путь короче — значит файл сам себе модуль
 // (корневые README, install.sh и прочее видно поимённо, они того стоят).
@@ -143,88 +149,134 @@ function readTasks() {
 const commits = readCommits();
 const { hideKit, forced } = pickKitVisibility(commits);
 const visible = (f) => !isIgnored(f) && (!hideKit || !f.startsWith('.claude/'));
-
-const nodes = new Map();   // id -> узел
-const links = new Map();   // "a\u0000b" -> { git, task }
-
-function touchNode(id) {
-  if (!nodes.has(id)) {
-    nodes.set(id, { id, group: id.split('/')[0], commits: 0, files: new Set(), first: '', last: '', tasks: [] });
-  }
-  return nodes.get(id);
-}
-function touchLink(a, b, kind) {
-  if (a === b) return;
-  const key = a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
-  if (!links.has(key)) links.set(key, { git: 0, task: 0 });
-  links.get(key)[kind]++;
-}
-
-let bulkSkipped = 0;
-for (const c of commits) {
-  const mods = new Set();
-  for (const f of c.files) {
-    if (!visible(f)) continue;
-    const id = toModule(f);
-    touchNode(id).files.add(f);
-    mods.add(id);
-  }
-  for (const id of mods) {
-    const n = nodes.get(id);
-    n.commits++;
-    if (c.date) {
-      if (!n.last || c.date > n.last) n.last = c.date;
-      if (!n.first || c.date < n.first) n.first = c.date;
-    }
-  }
-  if (c.files.length > BULK) { bulkSkipped++; continue; }   // массовая правка связей не доказывает
-  const arr = [...mods];
-  for (let i = 0; i < arr.length; i++) {
-    for (let j = i + 1; j < arr.length; j++) touchLink(arr[i], arr[j], 'git');
-  }
-}
-
 const tasks = readTasks();
-tasks.forEach((t, ti) => {
-  const mods = new Set();
-  for (const f of t.files) {
-    const norm = f.replace(/^\.\//, '').split('\\').join('/');
-    if (!visible(norm)) continue;
-    const id = toModule(norm);
-    touchNode(id).files.add(norm);
-    mods.add(id);
-  }
-  t.modules = [...mods];
-  for (const id of mods) nodes.get(id).tasks.push(ti);
-  const arr = [...mods];
-  for (let i = 0; i < arr.length; i++) {
-    for (let j = i + 1; j < arr.length; j++) touchLink(arr[i], arr[j], 'task');
-  }
-});
-
-const allNodes = [...nodes.values()]
-  .map((n) => ({ id: n.id, group: n.group, commits: n.commits, files: n.files.size, first: n.first, last: n.last, tasks: n.tasks }))
-  .sort((a, b) => b.commits - a.commits || a.id.localeCompare(b.id));
-
-// Силовая раскладка на странице перебирает все пары узлов. Сотни — нормально, тысячи — уже
-// подвисание, поэтому оставляем самые живые модули, а остальные честно считаем скрытыми.
-const nodeList = allNodes.slice(0, MAX_NODES);
-const nodesDropped = allNodes.length - nodeList.length;
-const kept = new Set(nodeList.map((n) => n.id));
-
-const linkList = [...links.entries()]
-  .map(([key, w]) => { const [source, target] = key.split('\u0000'); return { source, target, git: w.git, task: w.task }; })
-  .filter((l) => kept.has(l.source) && kept.has(l.target))
-  .sort((a, b) => (b.git + b.task * 2) - (a.git + a.task * 2));
 
 const MAX_LINKS = 2000;
-const linksShown = linkList.slice(0, MAX_LINKS);
+const groupOf = (id) => id.split('/')[0];
+
+/**
+ * Граф собирается на двух уровнях: «модули» (папки — общая картина, с чего начинают смотреть)
+ * и «файлы» (конкретика — что именно правят). Разница только в том, во что превращать путь
+ * и сколько узлов оставить, поэтому сборка живёт в одной функции.
+ *
+ * Важность узла = как часто его правят + сколько задач кита через него прошло. Задача весит
+ * втрое: это осознанная доработка, а не случайное соседство в одном прогоне. По этой важности
+ * и отбираются «те самые» файлы, когда их в проекте тысячи.
+ */
+function buildLevel(idOf, cap) {
+  const nodes = new Map();
+  const touch = (id) => {
+    if (!nodes.has(id)) {
+      nodes.set(id, { id, commits: 0, files: new Set(), first: '', last: '', tasks: [] });
+    }
+    return nodes.get(id);
+  };
+  let bulkSkipped = 0;
+
+  // первый проход — узлы и их вес
+  for (const c of commits) {
+    const ids = new Set();
+    for (const f of c.files) {
+      if (!visible(f)) continue;
+      const id = idOf(f);
+      touch(id).files.add(f);
+      ids.add(id);
+    }
+    for (const id of ids) {
+      const n = nodes.get(id);
+      n.commits++;
+      if (c.date) {
+        if (!n.last || c.date > n.last) n.last = c.date;
+        if (!n.first || c.date < n.first) n.first = c.date;
+      }
+    }
+    if (c.files.length > BULK) bulkSkipped++;
+  }
+
+  const taskIds = tasks.map((t) => {
+    const ids = new Set();
+    for (const f of t.files) {
+      const norm = normPath(f);
+      if (!visible(norm)) continue;
+      const id = idOf(norm);
+      touch(id).files.add(norm);
+      ids.add(id);
+    }
+    return [...ids];
+  });
+  taskIds.forEach((ids, ti) => { for (const id of ids) nodes.get(id).tasks.push(ti); });
+
+  const all = [...nodes.values()].map((n) => ({
+    id: n.id,
+    group: groupOf(n.id),
+    commits: n.commits,
+    files: n.files.size,
+    first: n.first,
+    last: n.last,
+    tasks: n.tasks,
+    score: n.commits + n.tasks.length * 3,
+  })).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+
+  const keptList = all.slice(0, cap);
+  const kept = new Set(keptList.map((n) => n.id));
+
+  // второй проход — связи, и только между теми, кто остался на карте
+  const links = new Map();
+  const bind = (a, b, kind) => {
+    if (a === b || !kept.has(a) || !kept.has(b)) return;
+    const key = a < b ? a + '\u0000' + b : b + '\u0000' + a;
+    if (!links.has(key)) links.set(key, { git: 0, task: 0 });
+    links.get(key)[kind]++;
+  };
+  for (const c of commits) {
+    if (c.files.length > BULK) continue;   // массовая правка связей не доказывает
+    const ids = [...new Set(c.files.filter(visible).map(idOf))];
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) bind(ids[i], ids[j], 'git');
+    }
+  }
+  taskIds.forEach((ids) => {
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) bind(ids[i], ids[j], 'task');
+    }
+  });
+
+  const linkList = [...links.entries()]
+    .map(([key, w]) => {
+      const p = key.split('\u0000');
+      return { source: p[0], target: p[1], git: w.git, task: w.task };
+    })
+    .sort((a, b) => (b.git + b.task * 2) - (a.git + a.task * 2));
+
+  return {
+    nodes: keptList,
+    links: linkList.slice(0, MAX_LINKS),
+    total: all.length,
+    dropped: all.length - keptList.length,
+    linksTotal: linkList.length,
+    linksDropped: Math.max(0, linkList.length - MAX_LINKS),
+    bulkSkipped,
+    taskIds,
+  };
+}
+
+const levelModule = buildLevel(toModule, MAX_NODES);
+const levelFile = buildLevel((f) => f, MAX_FILES);
 
 let version = '';
 try { version = (readFileSync(path.join(KIT_DIR, 'VERSION'), 'utf8').split('\n')[0] || '').trim(); }
 catch { /* нет файла */ }
 let generated = '';
 try { generated = new Date().toISOString().slice(0, 10); } catch { /* без даты */ }
+
+const packLevel = (lv) => ({
+  nodes: lv.nodes,
+  links: lv.links,
+  total: lv.total,
+  dropped: lv.dropped,
+  linksTotal: lv.linksTotal,
+  linksDropped: lv.linksDropped,
+});
 
 const data = {
   project: path.basename(PROJECT_ROOT),
@@ -234,24 +286,32 @@ const data = {
     hasGit: HAS_GIT,
     commitsScanned: commits.length,
     commitsRequested: COMMITS,
-    bulkSkipped, bulkLimit: BULK,
+    bulkSkipped: levelModule.bulkSkipped,
+    bulkLimit: BULK,
     depth: DEPTH,
-    hideKit, kitForced: forced,
-    nodesTotal: allNodes.length,
-    nodesDropped,
+    hideKit,
+    kitForced: forced,
     maxNodes: MAX_NODES,
-    linksTotal: linkList.length,
-    linksDropped: Math.max(0, linkList.length - linksShown.length),
+    maxFiles: MAX_FILES,
     tasksFound: tasks.length,
   },
-  nodes: nodeList,
-  links: linksShown,
-  tasks: tasks.map((t) => ({ title: t.title, date: t.date, outcome: t.outcome, modules: t.modules || [], files: t.files })),
+  levels: {
+    module: packLevel(levelModule),
+    file: packLevel(levelFile),
+  },
+  tasks: tasks.map((t, i) => ({
+    title: t.title,
+    date: t.date,
+    outcome: t.outcome,
+    files: t.files,
+    module: levelModule.taskIds[i],
+    file: levelFile.taskIds[i],
+  })),
 };
 
 if (flag('--json')) { out(JSON.stringify(data, null, 2)); process.exit(0); }
 
-if (!nodeList.length) {
+if (!levelModule.nodes.length && !levelFile.nodes.length) {
   out('Рисовать нечего: не нашлось ни коммитов с файлами, ни задач в artifacts/history.');
   out(HAS_GIT
     ? 'Репозиторий пуст или всё попало под фильтр — попробуй --with-kit.'
@@ -284,13 +344,13 @@ catch (err) { out(`Не смог записать карту: ${err.message}`); 
 
 const rel = path.relative(PROJECT_ROOT, OUT) || OUT;
 out(`Карта собрана: ${rel}`);
-out(`Модулей: ${nodeList.length}${nodesDropped ? ` (ещё ${nodesDropped} тише прочих скрыто, показать: --max-nodes ${allNodes.length})` : ''}`
-  + ` · связей: ${linksShown.length}`
-  + `${data.meta.linksDropped ? ` (ещё ${data.meta.linksDropped} самых слабых не попали)` : ''}`
-  + ` · задач из истории: ${tasks.length}`);
+const cap = (lv, key) => lv.dropped ? ` (ещё ${lv.dropped} тише прочих скрыто, показать: ${key} ${lv.total})` : '';
+out(`Модули: ${levelModule.nodes.length}${cap(levelModule, '--max-nodes')} · связей ${levelModule.links.length}`);
+out(`Файлы: ${levelFile.nodes.length}${cap(levelFile, '--files')} · связей ${levelFile.links.length}`);
+out(`Задач из истории: ${tasks.length}`);
 if (HAS_GIT) {
   out(`Просмотрено коммитов: ${commits.length}`
-    + `${bulkSkipped ? `, из них ${bulkSkipped} массовых (>${BULK} файлов) связей не дали` : ''}.`);
+    + `${levelModule.bulkSkipped ? `, из них ${levelModule.bulkSkipped} массовых (>${BULK} файлов) связей не дали` : ''}.`);
 } else {
   out('git в проекте не найден — связи взяты только из истории задач.');
 }
