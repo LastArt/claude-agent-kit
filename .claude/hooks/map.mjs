@@ -11,6 +11,10 @@
  *   2. .claude/artifacts/history/ — архив задач кита. В шапке каждой записи уже лежит строка
  *      «Затронутые файлы» (её кладёт archive-task.mjs), поэтому задача сразу знает свои модули.
  *      Отсюда второй слой связей и подсветка «что трогали в этой доработке».
+ *   3. .claude/explores/ — сохранённые разведки модулей. Вместе с задачами они образуют
+ *      третий уровень карты, «память»: облако накопленного знания о проекте, где связи —
+ *      общие файлы, общий модуль и общая тема. Тексты записей вшиваются в страницу, чтобы
+ *      по клику открывать их прямо там.
  *
  * На выходе — САМОДОСТАТОЧНЫЙ .claude/map.html: данные вшиты в страницу, никакого сервера
  * и интернета. Файл можно переслать, открыть с флешки, положить в вики.
@@ -40,6 +44,7 @@ const KIT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PROJECT_ROOT = path.resolve(KIT_DIR, '..');
 const TEMPLATE = path.join(KIT_DIR, 'assets', 'map.template.html');
 const HISTORY = path.join(KIT_DIR, 'artifacts', 'history');
+const EXPLORES = path.join(KIT_DIR, 'explores');
 
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(name);
@@ -140,9 +145,49 @@ function readTasks() {
     const filesRaw = (src.match(/\*\*Затронутые файлы:\*\*\s*(.+)$/m) || [, ''])[1].trim();
     const files = filesRaw && !/^не указаны/.test(filesRaw)
       ? filesRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
-    tasks.push({ title, date, outcome, files, source: name });
+    tasks.push({ title, date, outcome, files, source: name, text: src });
   }
   return tasks;
+}
+
+// -------- кэш разведок как часть памяти --------
+// Разведка модуля — такое же знание о проекте, как и завершённая задача: где что живёт,
+// обо что споткнулись. На карте памяти она стоит рядом с задачами и связывает их по модулю.
+function readExplores() {
+  if (!existsSync(EXPLORES)) return [];
+  let names = [];
+  try { names = readdirSync(EXPLORES).filter((n) => n.endsWith('.md') && n !== 'INDEX.md'); }
+  catch { return []; }
+  const found = [];
+  for (const name of names.sort()) {
+    let src = '';
+    try { src = readFileSync(path.join(EXPLORES, name), 'utf8'); } catch { continue; }
+    const mod = (src.match(/^module:\s*(.+)$/m) || [, ''])[1].trim();
+    const date = (src.match(/^date:\s*(.+)$/m) || [, ''])[1].trim();
+    const commit = (src.match(/^git_commit:\s*(.+)$/m) || [, ''])[1].trim();
+    found.push({
+      module: mod || name.replace(/\.md$/, '').split('__').join('/'),
+      date, commit, source: name, text: src,
+    });
+  }
+  return found;
+}
+
+// Слова заголовка, по которым задачи тянутся друг к другу тематически. Стемминга нет и
+// не надо: сравниваем начала слов — «кэшировани» и «кэширование» сходятся, а короткие
+// служебные слова отсекаются длиной.
+const STOP = new Set([
+  'после', 'перед', 'через', 'между', 'когда', 'чтобы', 'также', 'более', 'менее', 'может',
+  'нужно', 'новый', 'новая', 'новое', 'общий', 'общая', 'самый', 'этого', 'который', 'которая',
+  'этот', 'эта', 'все', 'всех', 'для', 'над', 'под', 'при', 'без', 'from', 'with', 'that', 'this',
+]);
+function topicKeys(text) {
+  const out = new Set();
+  for (const raw of String(text).toLowerCase().split(/[^0-9a-zа-яё_]+/)) {
+    if (raw.length < 5 || STOP.has(raw)) continue;
+    out.add(raw.slice(0, 6));   // грубая основа слова: хватает, чтобы сцепить однокоренные
+  }
+  return out;
 }
 
 // -------- сборка графа --------
@@ -260,8 +305,135 @@ function buildLevel(idOf, cap) {
   };
 }
 
+// -------- уровень памяти --------
+// Третий взгляд на проект: не код, а то, что о нём надумано. Узлы — завершённые задачи
+// и сохранённые разведки, связи — общие файлы, общий модуль и общая тема в заголовке.
+// Получается облако накопленного знания: видно, вокруг чего проект вертится и что с чем
+// в голове связано, а клик открывает саму запись целиком.
+function buildMemory() {
+  const explores = readExplores();
+  const nodes = [];
+
+  tasks.forEach((t, i) => {
+    const files = t.files.map(normPath).filter(visible);
+    nodes.push({
+      id: 'task:' + (t.source || i),
+      kind: 'task',
+      title: t.title,
+      date: t.date,
+      subtitle: t.outcome,
+      group: 'задачи',
+      files,
+      modules: [...new Set(files.map(toModule))],
+      topics: topicKeys(t.title),
+      score: 2 + files.length,
+      taskIndex: i,
+    });
+  });
+
+  explores.forEach((e) => {
+    nodes.push({
+      id: 'explore:' + e.source,
+      kind: 'explore',
+      title: e.module,
+      date: e.date,
+      subtitle: e.commit ? 'разведка на ' + e.commit : 'разведка',
+      group: 'разведки',
+      files: [],
+      modules: [e.module, toModule(e.module)],
+      topics: topicKeys(e.module),
+      score: 3,
+      taskIndex: -1,
+    });
+  });
+
+  const links = new Map();
+  const bind = (a, b, kind, add) => {
+    const key = a < b ? a + '\u0000' + b : b + '\u0000' + a;
+    if (!links.has(key)) links.set(key, { git: 0, task: 0 });
+    links.get(key)[kind] += add;
+  };
+
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j];
+
+      // общие файлы — самая крепкая связь: две задачи правили одно и то же
+      const shared = a.files.filter((f) => b.files.indexOf(f) >= 0).length;
+      if (shared) bind(a.id, b.id, 'task', shared * 2);
+
+      // общий модуль — задача и разведка про одно место в коде
+      const sameModule = a.modules.some((m) => b.modules.indexOf(m) >= 0);
+      if (sameModule && !shared) bind(a.id, b.id, 'task', 1);
+
+      // общая тема в заголовке — то самое «об одном и том же думали»
+      let topics = 0;
+      a.topics.forEach((k) => { if (b.topics.has(k)) topics++; });
+      if (topics) bind(a.id, b.id, 'git', topics);
+    }
+  }
+
+  const packed = nodes
+    .map((n) => ({
+      id: n.id, kind: n.kind, group: n.group, title: n.title, date: n.date,
+      subtitle: n.subtitle, commits: 0, files: n.files.length, score: n.score,
+      first: n.date, last: n.date, tasks: n.taskIndex >= 0 ? [n.taskIndex] : [],
+    }))
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+
+  const linkList = [...links.entries()]
+    .map(([key, w]) => {
+      const p = key.split('\u0000');
+      return { source: p[0], target: p[1], git: w.git, task: w.task };
+    })
+    .sort((a, b) => (b.git + b.task * 2) - (a.git + a.task * 2));
+
+  // Документы для читалки: markdown как есть, страница отрисует его сама.
+  const docs = {};
+  tasks.forEach((t, i) => {
+    docs['task:' + (t.source || i)] = { title: t.title, date: t.date, kind: 'задача', text: clampDoc(t.text) };
+  });
+  explores.forEach((e) => {
+    docs['explore:' + e.source] = { title: e.module, date: e.date, kind: 'разведка', text: clampDoc(e.text) };
+  });
+
+  return {
+    nodes: packed,
+    links: linkList.slice(0, MAX_LINKS),
+    total: packed.length,
+    dropped: 0,
+    linksTotal: linkList.length,
+    linksDropped: Math.max(0, linkList.length - MAX_LINKS),
+    docs,
+    exploresFound: explores.length,
+  };
+}
+
+// Записи бывают длинными, а страница носит их в себе. Режем по-честному и говорим об этом
+// прямо в тексте, чтобы никто не решил, что документ на этом и заканчивается.
+const DOC_LIMIT = 60000;
+
+// Служебная шапка разведки (module / date / git_commit) в читалке не нужна: эти поля уже
+// вынесены в заголовок карточки, а в тексте они выглядят мусором.
+function stripFrontmatter(text) {
+  const t = String(text || '');
+  if (!t.startsWith('---')) return t;
+  const close = t.indexOf('\n---', 3);
+  if (close < 0) return t;
+  const after = t.indexOf('\n', close + 1);
+  return after < 0 ? '' : t.slice(after + 1).replace(/^\s+/, '');
+}
+
+function clampDoc(text) {
+  const s = stripFrontmatter(text);
+  if (s.length <= DOC_LIMIT) return s;
+  return s.slice(0, DOC_LIMIT) + '\n\n---\n\n_(запись длиннее ' + DOC_LIMIT
+    + ' знаков — здесь показано начало, целиком она лежит в `.claude/artifacts/history/`)_\n';
+}
+
 const levelModule = buildLevel(toModule, MAX_NODES);
 const levelFile = buildLevel((f) => f, MAX_FILES);
+const levelMemory = buildMemory();
 
 let version = '';
 try { version = (readFileSync(path.join(KIT_DIR, 'VERSION'), 'utf8').split('\n')[0] || '').trim(); }
@@ -294,11 +466,14 @@ const data = {
     maxNodes: MAX_NODES,
     maxFiles: MAX_FILES,
     tasksFound: tasks.length,
+    exploresFound: levelMemory.exploresFound,
   },
   levels: {
     module: packLevel(levelModule),
     file: packLevel(levelFile),
+    memory: packLevel(levelMemory),
   },
+  docs: levelMemory.docs,
   tasks: tasks.map((t, i) => ({
     title: t.title,
     date: t.date,
@@ -306,12 +481,14 @@ const data = {
     files: t.files,
     module: levelModule.taskIds[i],
     file: levelFile.taskIds[i],
+    // на уровне памяти задача — это сам узел, так подсветка работает одинаково везде
+    memory: ['task:' + (t.source || i)],
   })),
 };
 
 if (flag('--json')) { out(JSON.stringify(data, null, 2)); process.exit(0); }
 
-if (!levelModule.nodes.length && !levelFile.nodes.length) {
+if (!levelModule.nodes.length && !levelFile.nodes.length && !levelMemory.nodes.length) {
   out('Рисовать нечего: не нашлось ни коммитов с файлами, ни задач в artifacts/history.');
   out(HAS_GIT
     ? 'Репозиторий пуст или всё попало под фильтр — попробуй --with-kit.'
@@ -347,7 +524,8 @@ out(`Карта собрана: ${rel}`);
 const cap = (lv, key) => lv.dropped ? ` (ещё ${lv.dropped} тише прочих скрыто, показать: ${key} ${lv.total})` : '';
 out(`Модули: ${levelModule.nodes.length}${cap(levelModule, '--max-nodes')} · связей ${levelModule.links.length}`);
 out(`Файлы: ${levelFile.nodes.length}${cap(levelFile, '--files')} · связей ${levelFile.links.length}`);
-out(`Задач из истории: ${tasks.length}`);
+out(`Память: ${levelMemory.nodes.length} ` +
+  `(задач ${tasks.length}, разведок ${levelMemory.exploresFound}) · связей ${levelMemory.links.length}`);
 if (HAS_GIT) {
   out(`Просмотрено коммитов: ${commits.length}`
     + `${levelModule.bulkSkipped ? `, из них ${levelModule.bulkSkipped} массовых (>${BULK} файлов) связей не дали` : ''}.`);

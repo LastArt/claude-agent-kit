@@ -79,6 +79,41 @@
   .note b{color:#fff}
   footer{color:var(--muted);font-size:12px;margin-top:20px;border-top:1px solid var(--border);padding-top:10px}
 
+  .reader{position:fixed;inset:0;background:rgba(20,20,19,.55);z-index:20;
+    display:flex;align-items:flex-start;justify-content:center;padding:32px 16px;overflow-y:auto}
+  .reader[hidden]{display:none}
+  .reader .sheet{position:relative;background:var(--bg);border-radius:14px;max-width:780px;width:100%;
+    padding:34px 40px 48px;box-shadow:0 18px 60px rgba(0,0,0,.3)}
+  .reader .close{position:absolute;right:14px;top:12px;width:32px;height:32px;border-radius:8px;
+    border:1px solid var(--border);background:var(--panel);color:var(--muted);font-size:20px;
+    line-height:1;cursor:pointer}
+  .reader .close:hover{border-color:var(--accent);color:var(--accent)}
+  .reader .kicker{margin:0;color:var(--muted);font-size:12.5px;text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+  .reader h1{margin:6px 0 18px;font-size:26px;line-height:1.25;letter-spacing:-.015em}
+  .doc{font-size:15.5px;line-height:1.7}
+  .doc h1,.doc h2,.doc h3,.doc h4{line-height:1.3;margin:26px 0 8px}
+  .doc h1{font-size:21px;border-bottom:2px solid var(--border);padding-bottom:7px}
+  .doc h2{font-size:18.5px;border-bottom:1px solid var(--border);padding-bottom:6px}
+  .doc h3{font-size:16.5px}
+  .doc h4{font-size:15px;color:var(--muted)}
+  .doc p{margin:11px 0}
+  .doc ul,.doc ol{margin:10px 0;padding-left:24px}
+  .doc li{margin:5px 0}
+  .doc blockquote{margin:14px 0;padding:6px 16px;border-left:3px solid var(--accent);
+    background:var(--surface);border-radius:0 8px 8px 0;color:var(--muted)}
+  .doc pre{background:#141413;color:#f0eee6;padding:13px 16px;border-radius:10px;overflow-x:auto;margin:14px 0}
+  .doc pre code{background:none;color:inherit;padding:0;font-size:13px}
+  .doc code{background:var(--code);padding:2px 6px;border-radius:6px;
+    font:13.5px ui-monospace,Consolas,monospace}
+  .doc hr{border:0;border-top:1px solid var(--border);margin:22px 0}
+  .doc table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  .doc th,.doc td{border:1px solid var(--border);padding:7px 10px;text-align:left}
+  .doc th{background:var(--surface)}
+  .doc a{color:var(--accent)}
+  .openbtn{display:block;width:100%;margin:8px 0 0;padding:9px 12px;border:1px solid var(--accent);
+    background:var(--accent);color:#fff;border-radius:9px;font:600 14px inherit;cursor:pointer}
+  .openbtn:hover{filter:brightness(1.06)}
+
   @media (max-width:900px){
     body{overflow:auto}
     .app{flex-direction:column;height:auto}
@@ -110,6 +145,7 @@
     <div class="seg">
       <button id="lvModule" class="on">папки</button>
       <button id="lvFile">файлы</button>
+      <button id="lvMemory">память</button>
     </div>
     <p class="empty" id="lvHint"></p>
 
@@ -131,6 +167,15 @@
     <div id="about"></div>
     <footer>Собрано <span id="gen"></span> · Claude Agent Kit</footer>
   </aside>
+</div>
+
+<div class="reader" id="reader" hidden>
+  <div class="sheet">
+    <button class="close" id="readerClose" title="Закрыть (Esc)">&times;</button>
+    <p class="kicker" id="readerKicker"></p>
+    <h1 id="readerTitle"></h1>
+    <div class="doc" id="readerBody"></div>
+  </div>
 </div>
 
 <script type="application/json" id="data">{{DATA}}</script>
@@ -165,7 +210,8 @@
   var DB = ['sql','db','sqlite','sqlite3','prisma'];
   var CONFIGNAMES = ['dockerfile','makefile','gitignore','gitattributes','editorconfig','npmrc','nvmrc','browserslist','license','licence','codeowners'];
 
-  function typeOf(id) {
+  function typeOf(id, node) {
+    if (level === 'memory') return (node && node.kind) === 'explore' ? 'explore' : 'task';
     if (level === 'module') return 'folder';
     var name = id.split('/').pop().toLowerCase();
     // Тесты называют по-разному в каждом языке: user.test.ts, test_export.py, ExportSpec.kt,
@@ -190,7 +236,8 @@
   var TYPE_RU = {
     folder: 'папка', code: 'код', shell: 'скрипт', data: 'данные', doc: 'текст',
     markup: 'разметка', style: 'стили', image: 'картинка', db: 'база', test: 'тест',
-    config: 'настройки', other: 'файл'
+    config: 'настройки', other: 'файл',
+    task: 'задача', explore: 'разведка'
   };
 
   // -------- фигуры --------
@@ -269,6 +316,12 @@
         ctx.moveTo(cx + Math.cos(an) * u * 0.58, cy + Math.sin(an) * u * 0.58);
         ctx.lineTo(cx + Math.cos(an) * u * 0.92, cy + Math.sin(an) * u * 0.92);
       }
+    } else if (kind === 'task') {
+      ctx.moveTo(cx - u * 0.7, cy - u * 0.15); ctx.lineTo(cx - u * 0.2, cy + u * 0.45);
+      ctx.lineTo(cx + u * 0.75, cy - u * 0.6);
+    } else if (kind === 'explore') {
+      ctx.arc(cx - u * 0.15, cy - u * 0.15, u * 0.55, 0, Math.PI * 2);
+      ctx.moveTo(cx + u * 0.25, cy + u * 0.25); ctx.lineTo(cx + u * 0.8, cy + u * 0.8);
     } else if (kind === 'folder') {
       ctx.moveTo(cx - u * 0.55, cy + u * 0.2); ctx.lineTo(cx + u * 0.55, cy + u * 0.2);
     } else {
@@ -298,6 +351,7 @@
     nodes = lv.nodes.map(function (n) {
       return { id: n.id, group: n.group, commits: n.commits, files: n.files, score: n.score,
         first: n.first, last: n.last, tasks: n.tasks || [],
+        kind: n.kind || '', title: n.title || '', date: n.date || '', subtitle: n.subtitle || '',
         x: 0, y: 0, vx: 0, vy: 0, fixed: false, r: 0, type: '' };
     });
     byId = {};
@@ -310,7 +364,7 @@
     nodes.forEach(function (n) { if (n.score > maxScore) maxScore = n.score; });
     nodes.forEach(function (n) {
       n.r = 8 + 16 * Math.sqrt(n.score / maxScore);   // размер = важность узла
-      n.type = typeOf(n.id);
+      n.type = typeOf(n.id, n);
     });
 
     links = [];
@@ -398,7 +452,10 @@
   }
 
   // -------- отрисовка --------
-  function matches(n) { return !query || n.id.toLowerCase().indexOf(query) >= 0; }
+  function labelOf(n) { return level === 'memory' ? (n.title || n.id) : n.id; }
+  function matches(n) {
+    return !query || (labelOf(n) + ' ' + n.id).toLowerCase().indexOf(query) >= 0;
+  }
   function inTask(i) {
     if (taskOn < 0) return false;
     var t = DATA.tasks[taskOn];
@@ -409,10 +466,12 @@
     if (query) return !matches(nodes[i]);
     return false;
   }
-  function shortName(id) {
-    if (level === 'module') return id.length > 28 ? '…' + id.slice(-27) : id;
-    var name = id.split('/').pop();
-    return name.length > 24 ? name.slice(0, 23) + '…' : name;
+  function shortName(n) {
+    var s = labelOf(n);
+    if (level === 'file') s = s.split('/').pop();
+    var lim = level === 'memory' ? 30 : 24;
+    if (level === 'module') return s.length > 28 ? '…' + s.slice(-27) : s;
+    return s.length > lim ? s.slice(0, lim - 1) + '…' : s;
   }
 
   function draw() {
@@ -455,7 +514,7 @@
 
       var label = onScreen > 13 || i === picked || i === hovered || view.k > 1.6;
       if (label && !faint) {
-        var text = shortName(n.id);
+        var text = shortName(n);
         // Размер держим в ЭКРАННЫХ пикселях: холст уже отмасштабирован, поэтому делим на view.k.
         var fs = 12 / view.k;
         ctx.font = '600 ' + fs + 'px ui-monospace,Consolas,monospace';
@@ -523,7 +582,9 @@
   cv.addEventListener('dblclick', function (e) {
     var rect = cv.getBoundingClientRect();
     var hit = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
-    if (hit >= 0) { nodes[hit].fixed = false; alpha = Math.max(alpha, 0.5); }
+    if (hit < 0) return;
+    if (level === 'memory') { openDoc(nodes[hit].id); return; }
+    nodes[hit].fixed = false; alpha = Math.max(alpha, 0.5);
   });
   cv.addEventListener('wheel', function (e) {
     e.preventDefault();
@@ -574,23 +635,35 @@
     picked = i;
     pickBox.innerHTML = '';
     if (i < 0) {
-      pickBox.appendChild(el('p', 'empty', level === 'module'
-        ? 'Кликните по папке на карте.' : 'Кликните по файлу на карте.'));
+      pickBox.appendChild(el('p', 'empty', level === 'module' ? 'Кликните по папке на карте.'
+        : level === 'file' ? 'Кликните по файлу на карте.'
+        : 'Кликните по записи — откроется карточка, двойной клик показывает её целиком.'));
       draw();
       return;
     }
     var n = nodes[i];
     var card = el('div', 'card');
-    card.appendChild(el('div', 'path', n.id));
+    card.appendChild(el('div', 'path', labelOf(n)));
     var dl = el('dl');
     function add(k, v) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); }
     add('тип', TYPE_RU[n.type] || 'файл');
-    add('важность', String(n.score));
-    add('коммитов', String(n.commits));
-    if (level === 'module') add('файлов', String(n.files));
-    if (n.first) add('правился', n.first === n.last ? n.last : n.first + ' … ' + n.last);
-    if (n.tasks.length) add('в задачах', String(n.tasks.length));
+    if (level === 'memory') {
+      if (n.date) add('дата', n.date);
+      if (n.subtitle) add('итог', n.subtitle);
+      if (n.files) add('файлов', String(n.files));
+    } else {
+      add('важность', String(n.score));
+      add('коммитов', String(n.commits));
+      if (level === 'module') add('файлов', String(n.files));
+      if (n.first) add('правился', n.first === n.last ? n.last : n.first + ' … ' + n.last);
+      if (n.tasks.length) add('в задачах', String(n.tasks.length));
+    }
     card.appendChild(dl);
+    if (level === 'memory' && (DATA.docs || {})[n.id]) {
+      var btn = el('button', 'openbtn', 'Открыть запись целиком');
+      btn.onclick = function () { openDoc(n.id); };
+      card.appendChild(btn);
+    }
     pickBox.appendChild(card);
 
     var near = [];
@@ -630,11 +703,12 @@
       var li = el('li');
       if (ti === taskOn) li.className = 'on';
       var hit = (t[level] || []).length;
+      if (level === 'memory') hit = 1;
       li.appendChild(el('div', null, t.title));
       li.appendChild(el('div', 'meta', (t.date || '') + (t.outcome ? ' · ' + t.outcome : '')
-        + ' · ' + hit + ' ' + (level === 'module'
+        + (level === 'memory' ? '' : ' · ' + hit + ' ' + (level === 'module'
           ? plural(hit, 'папка', 'папки', 'папок')
-          : plural(hit, 'файл', 'файла', 'файлов')) + ' на карте'));
+          : plural(hit, 'файл', 'файла', 'файлов')) + ' на карте')));
       if (t.files.length) li.appendChild(el('div', 'files', t.files.join(' · ')));
       li.onclick = function () { taskOn = (taskOn === ti) ? -1 : ti; renderTasks(); draw(); };
       ul.appendChild(li);
@@ -647,16 +721,24 @@
     document.getElementById('sub').textContent =
       nodes.length + ' ' + (level === 'module'
         ? plural(nodes.length, 'папка', 'папки', 'папок')
-        : plural(nodes.length, 'файл', 'файла', 'файлов'))
+        : level === 'file'
+          ? plural(nodes.length, 'файл', 'файла', 'файлов')
+          : plural(nodes.length, 'запись', 'записи', 'записей'))
       + ' · ' + links.length + ' ' + plural(links.length, 'связь', 'связи', 'связей')
       + ' · ' + DATA.tasks.length + ' ' + plural(DATA.tasks.length, 'задача', 'задачи', 'задач') + ' из истории';
     document.getElementById('lvHint').textContent = level === 'module'
       ? 'Папки: общая картина, с чего смотреть.'
-      : (lv.dropped
-        ? 'Файлы: ' + nodes.length + ' самых важных из ' + lv.total + ' (важность = как часто правят + сколько задач прошло).'
-        : 'Файлы: все ' + lv.total + ' — важность = как часто правят + сколько задач прошло.');
+      : level === 'file'
+        ? (lv.dropped
+          ? 'Файлы: ' + nodes.length + ' самых важных из ' + lv.total + ' (важность = как часто правят + сколько задач прошло).'
+          : 'Файлы: все ' + lv.total + ' — важность = как часто правят + сколько задач прошло.')
+        : (nodes.length
+          ? 'Память: задачи и разведки. Связи — общие файлы, общий модуль, общая тема. Двойной клик открывает запись.'
+          : 'Память пуста: она копится сама, когда задачи проходят через конвейер и сохраняются разведки.');
     document.getElementById('lvModule').className = level === 'module' ? 'on' : '';
     document.getElementById('lvFile').className = level === 'file' ? 'on' : '';
+    document.getElementById('lvMemory').className = level === 'memory' ? 'on' : '';
+    document.getElementById('q').placeholder = level === 'memory' ? 'задача или разведка' : 'модуль или путь';
   }
 
   function renderAbout() {
@@ -673,6 +755,9 @@
     var lm = DATA.levels.module, lf = DATA.levels.file;
     if (lm.dropped) lines.push('Папок на карте: ' + lm.nodes.length + ' из ' + lm.total + ' (ключ --max-nodes покажет все).');
     if (lf.dropped) lines.push('Файлов на карте: ' + lf.nodes.length + ' из ' + lf.total + ' — самые важные (ключ --files покажет больше).');
+    lines.push('Память: ' + m.tasksFound + ' ' + plural(m.tasksFound, 'задача', 'задачи', 'задач')
+      + ' из истории и ' + (m.exploresFound || 0) + ' ' + plural(m.exploresFound || 0, 'разведка', 'разведки', 'разведок')
+      + ' из кэша.');
     if (lm.linksDropped || lf.linksDropped) lines.push('Часть самых слабых связей не поместилась на карту.');
     if (m.hideKit) lines.push('Папка .claude/ скрыта как служебная (ключ --with-kit покажет её).');
     if (m.kitForced) lines.push('Папка .claude/ показана: без неё карта осталась бы пустой.');
@@ -682,7 +767,10 @@
     note.innerHTML = '<b>Как читать.</b> Значок — папка или файл, размер — важность: как часто правят '
       + 'и сколько задач через него прошло. Форма значка говорит про тип файла, цвет — про папку, в которой он лежит. '
       + 'Линия значит «меняли вместе»: серая — так вышло по коммитам, оранжевая — их свела общая задача кита. '
-      + 'Это карта того, как проект правят, а не схема импортов — и обычно она честнее.';
+      + 'Это карта того, как проект правят, а не схема импортов — и обычно она честнее. '
+      + '<br><br>На уровне <b>памяти</b> узлы — не код, а накопленное о нём знание: завершённые задачи и сохранённые '
+      + 'разведки. Там линия значит «об одном и том же»: общие файлы, общий модуль или общая тема в заголовке. '
+      + 'Двойной клик открывает запись целиком, прямо здесь.';
     box.appendChild(note);
 
     var lg = el('div', 'legend');
@@ -694,6 +782,100 @@
     });
     box.appendChild(lg);
   }
+
+  // -------- читалка --------
+  // Записи памяти — обычный markdown. Показываем его как документ прямо в странице:
+  // никакого внешнего просмотрщика, никакой библиотеки — разбор построчный и минимальный,
+  // ровно на то, чем пишут агенты кита: заголовки, списки, таблицы, код, цитаты.
+  function escHtml(s) {
+    return String(s).split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;');
+  }
+  function inline(s) {
+    var out = escHtml(s);
+    out = out.replace(/`([^`]+)`/g, function (m, c) { return '<code>' + c + '</code>'; });
+    out = out.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    out = out.replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<i>$2</i>');
+    out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    return out;
+  }
+  function mdToHtml(src) {
+    var lines = String(src).split('\n');
+    var html = [], i, inCode = false, listType = '', para = [];
+
+    function flushPara() {
+      if (para.length) { html.push('<p>' + inline(para.join(' ')) + '</p>'); para = []; }
+    }
+    function closeList() { if (listType) { html.push('</' + listType + '>'); listType = ''; } }
+
+    for (i = 0; i < lines.length; i++) {
+      var ln = lines[i];
+
+      if (/^```/.test(ln)) {
+        flushPara(); closeList();
+        if (!inCode) { html.push('<pre><code>'); inCode = true; }
+        else { html.push('</code></pre>'); inCode = false; }
+        continue;
+      }
+      if (inCode) { html.push(escHtml(ln) + '\n'); continue; }
+
+      if (!ln.trim()) { flushPara(); closeList(); continue; }
+
+      var h = ln.match(/^(#{1,6})\s+(.*)$/);
+      if (h) {
+        flushPara(); closeList();
+        var lvl = Math.min(4, h[1].length);
+        html.push('<h' + lvl + '>' + inline(h[2]) + '</h' + lvl + '>');
+        continue;
+      }
+      if (/^\s*([-*_])\1{2,}\s*$/.test(ln)) { flushPara(); closeList(); html.push('<hr>'); continue; }
+      if (/^\s*>\s?/.test(ln)) {
+        flushPara(); closeList();
+        html.push('<blockquote>' + inline(ln.replace(/^\s*>\s?/, '')) + '</blockquote>');
+        continue;
+      }
+      // таблица: строку-разделитель проглатываем, остальные строки идут ячейками
+      if (/^\s*\|/.test(ln)) {
+        flushPara(); closeList();
+        if (/^\s*\|[\s:|-]+\|\s*$/.test(ln)) continue;
+        var cells = ln.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|');
+        var head = !/<table/.test(html[html.length - 1] || '') && !/<\/tr>/.test(html[html.length - 1] || '');
+        if (head) html.push('<table>');
+        html.push('<tr>' + cells.map(function (c) {
+          return head ? '<th>' + inline(c.trim()) + '</th>' : '<td>' + inline(c.trim()) + '</td>';
+        }).join('') + '</tr>');
+        if (i + 1 >= lines.length || !/^\s*\|/.test(lines[i + 1])) html.push('</table>');
+        continue;
+      }
+      var ul = ln.match(/^\s*[-*+]\s+(.*)$/);
+      var ol = ln.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (ul || ol) {
+        flushPara();
+        var want = ul ? 'ul' : 'ol';
+        if (listType !== want) { closeList(); html.push('<' + want + '>'); listType = want; }
+        html.push('<li>' + inline((ul || ol)[1]) + '</li>');
+        continue;
+      }
+      para.push(ln.trim());
+    }
+    flushPara(); closeList();
+    if (inCode) html.push('</code></pre>');
+    return html.join('');
+  }
+
+  var readerBox = document.getElementById('reader');
+  function openDoc(id) {
+    var doc = (DATA.docs || {})[id];
+    if (!doc) return;
+    document.getElementById('readerKicker').textContent =
+      doc.kind + (doc.date ? ' · ' + doc.date : '');
+    document.getElementById('readerTitle').textContent = doc.title || id;
+    document.getElementById('readerBody').innerHTML = mdToHtml(doc.text || '');
+    readerBox.hidden = false;
+  }
+  function closeDoc() { readerBox.hidden = true; }
+  document.getElementById('readerClose').onclick = closeDoc;
+  readerBox.onclick = function (e) { if (e.target === readerBox) closeDoc(); };
+  window.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeDoc(); });
 
   // -------- контролы --------
   var minwEl = document.getElementById('minw'), minwv = document.getElementById('minwv');
@@ -710,6 +892,7 @@
   document.getElementById('q').oninput = function () { query = this.value.trim().toLowerCase(); draw(); };
   document.getElementById('lvModule').onclick = function () { if (level !== 'module') loadLevel('module'); };
   document.getElementById('lvFile').onclick = function () { if (level !== 'file') loadLevel('file'); };
+  document.getElementById('lvMemory').onclick = function () { if (level !== 'memory') loadLevel('memory'); };
 
   document.getElementById('gen').textContent = DATA.generated || '';
   window.addEventListener('resize', resize);
