@@ -27,6 +27,7 @@
  *   --bulk N        коммит, тронувший больше N файлов, связей не даёт (по умолчанию 25):
  *                   массовый рефакторинг и релизные прогоны иначе связывают всё со всем
  *   --with-kit      не прятать саму папку .claude из карты
+ *   --no-code       не вшивать содержимое файлов (карта уедет наружу — код останется дома)
  *   --out ПУТЬ      куда писать (по умолчанию .claude/map.html)
  *   --open          открыть готовую карту в браузере
  *   --json          выдать собранные данные в stdout и ничего не писать (для отладки)
@@ -431,9 +432,62 @@ function clampDoc(text) {
     + ' знаков — здесь показано начало, целиком она лежит в `.claude/artifacts/history/`)_\n';
 }
 
+// -------- содержимое файлов для читалки --------
+// Клик по файлу должен открывать сам файл, иначе карта обрывается на полуслове. Вшиваем
+// содержимое только тех файлов, что реально попали на карту, и только текстовых — с потолком
+// на файл и общим бюджетом, чтобы страница не превратилась в архив репозитория.
+// Ключ --no-code отключает это целиком: бывает, что карту отдают наружу, а код показывать нельзя.
+const NO_CODE = flag('--no-code');
+const FILE_LIMIT = 80000;
+const CODE_BUDGET = 6000000;
+const BINARY_EXT = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'avif', 'pdf', 'zip', 'gz', 'tar', 'rar',
+  '7z', 'exe', 'dll', 'so', 'dylib', 'class', 'jar', 'woff', 'woff2', 'ttf', 'otf', 'eot',
+  'mp3', 'mp4', 'mov', 'avi', 'wav', 'psd', 'ai', 'sqlite', 'db', 'bin', 'pyc',
+]);
+
+function collectFileDocs(fileNodes) {
+  const docs = {};
+  const stat = { embedded: 0, missing: 0, binary: 0, budget: 0, chars: 0 };
+  if (NO_CODE) return { docs, stat, off: true };
+
+  for (const n of fileNodes) {
+    const ext = (n.id.split('.').pop() || '').toLowerCase();
+    if (BINARY_EXT.has(ext)) { stat.binary++; continue; }
+
+    const abs = path.join(PROJECT_ROOT, n.id);
+    let text = '';
+    try { text = readFileSync(abs, 'utf8'); }
+    catch { stat.missing++; continue; }   // файл переименован или удалён — в истории он есть, на диске нет
+
+    // Признак двоичного: нулевой байт в начале. Дешевле и надёжнее, чем гадать по расширению.
+    if (text.slice(0, 8000).indexOf('\u0000') >= 0) { stat.binary++; continue; }
+
+    if (stat.chars + Math.min(text.length, FILE_LIMIT) > CODE_BUDGET) { stat.budget++; continue; }
+
+    let clipped = false;
+    if (text.length > FILE_LIMIT) { text = text.slice(0, FILE_LIMIT); clipped = true; }
+    stat.chars += text.length;
+    stat.embedded++;
+
+    const isMd = ext === 'md' || ext === 'markdown';
+    docs[n.id] = {
+      title: n.id,
+      date: n.last || '',
+      kind: 'файл',
+      lines: text.split('\n').length,
+      code: !isMd,          // markdown показываем как документ, остальное — как исходник
+      clipped,
+      text,
+    };
+  }
+  return { docs, stat, off: false };
+}
+
 const levelModule = buildLevel(toModule, MAX_NODES);
 const levelFile = buildLevel((f) => f, MAX_FILES);
 const levelMemory = buildMemory();
+const fileDocs = collectFileDocs(levelFile.nodes);
 
 let version = '';
 try { version = (readFileSync(path.join(KIT_DIR, 'VERSION'), 'utf8').split('\n')[0] || '').trim(); }
@@ -467,13 +521,22 @@ const data = {
     maxFiles: MAX_FILES,
     tasksFound: tasks.length,
     exploresFound: levelMemory.exploresFound,
+    code: {
+      off: fileDocs.off,
+      embedded: fileDocs.stat.embedded,
+      missing: fileDocs.stat.missing,
+      binary: fileDocs.stat.binary,
+      budget: fileDocs.stat.budget,
+      limit: FILE_LIMIT,
+    },
   },
   levels: {
     module: packLevel(levelModule),
     file: packLevel(levelFile),
     memory: packLevel(levelMemory),
   },
-  docs: levelMemory.docs,
+  // Читалка одна на всю карту: и записи памяти, и содержимое файлов лежат в общем словаре.
+  docs: Object.assign({}, levelMemory.docs, fileDocs.docs),
   tasks: tasks.map((t, i) => ({
     title: t.title,
     date: t.date,
@@ -524,6 +587,16 @@ out(`Карта собрана: ${rel}`);
 const cap = (lv, key) => lv.dropped ? ` (ещё ${lv.dropped} тише прочих скрыто, показать: ${key} ${lv.total})` : '';
 out(`Модули: ${levelModule.nodes.length}${cap(levelModule, '--max-nodes')} · связей ${levelModule.links.length}`);
 out(`Файлы: ${levelFile.nodes.length}${cap(levelFile, '--files')} · связей ${levelFile.links.length}`);
+if (fileDocs.off) {
+  out('Содержимое файлов не вшито (--no-code) — читалка откроет только записи памяти.');
+} else {
+  const s = fileDocs.stat;
+  const tail = [];
+  if (s.missing) tail.push(`${s.missing} нет в рабочей копии`);
+  if (s.binary) tail.push(`${s.binary} двоичных`);
+  if (s.budget) tail.push(`${s.budget} не влезло в бюджет страницы`);
+  out(`Файлов доступно для чтения в карте: ${s.embedded}` + (tail.length ? ` (${tail.join(', ')})` : ''));
+}
 out(`Память: ${levelMemory.nodes.length} ` +
   `(задач ${tasks.length}, разведок ${levelMemory.exploresFound}) · связей ${levelMemory.links.length}`);
 if (HAS_GIT) {

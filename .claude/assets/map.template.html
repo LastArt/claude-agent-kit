@@ -110,6 +110,14 @@
   .doc th,.doc td{border:1px solid var(--border);padding:7px 10px;text-align:left}
   .doc th{background:var(--surface)}
   .doc a{color:var(--accent)}
+  .src{counter-reset:l;background:#141413;color:#f0eee6;border-radius:10px;padding:12px 0;
+    overflow-x:auto;font:13px/1.6 ui-monospace,"Cascadia Code",Consolas,monospace;margin:8px 0}
+  .src .ln{display:block;white-space:pre;padding:0 18px 0 62px;position:relative}
+  .src .ln::before{counter-increment:l;content:counter(l);position:absolute;left:0;width:46px;
+    text-align:right;color:#6b6459;user-select:none}
+  .src .ln:hover{background:rgba(255,255,255,.05)}
+  .clip{color:var(--muted);font-size:13px;margin:12px 0 0;padding-top:10px;border-top:1px solid var(--border)}
+
   .openbtn{display:block;width:100%;margin:8px 0 0;padding:9px 12px;border:1px solid var(--accent);
     background:var(--accent);color:#fff;border-radius:9px;font:600 14px inherit;cursor:pointer}
   .openbtn:hover{filter:brightness(1.06)}
@@ -130,7 +138,7 @@
       <h1>Карта проекта {{PROJECT}}<span class="pill">кит {{VERSION}}</span></h1>
       <p class="sub" id="sub"></p>
     </div>
-    <div class="hint">колесо — масштаб · тянуть фон — сдвинуть · тянуть узел — закрепить · двойной клик по узлу — отпустить</div>
+    <div class="hint">колесо — масштаб · тянуть фон — сдвинуть · тянуть узел — закрепить · двойной клик — открыть файл или запись</div>
     <div class="zoom">
       <button id="zin" title="Крупнее">+</button>
       <button id="zout" title="Мельче">&minus;</button>
@@ -583,7 +591,7 @@
     var rect = cv.getBoundingClientRect();
     var hit = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
     if (hit < 0) return;
-    if (level === 'memory') { openDoc(nodes[hit].id); return; }
+    if (level !== 'module' && (DATA.docs || {})[nodes[hit].id]) { openDoc(nodes[hit].id); return; }
     nodes[hit].fixed = false; alpha = Math.max(alpha, 0.5);
   });
   cv.addEventListener('wheel', function (e) {
@@ -659,10 +667,15 @@
       if (n.tasks.length) add('в задачах', String(n.tasks.length));
     }
     card.appendChild(dl);
-    if (level === 'memory' && (DATA.docs || {})[n.id]) {
-      var btn = el('button', 'openbtn', 'Открыть запись целиком');
+    if ((DATA.docs || {})[n.id]) {
+      var btn = el('button', 'openbtn', level === 'memory' ? 'Открыть запись целиком' : 'Открыть файл');
       btn.onclick = function () { openDoc(n.id); };
       card.appendChild(btn);
+    } else if (level === 'file') {
+      var why = DATA.meta.code && DATA.meta.code.off
+        ? 'Содержимое не вшито в карту (собрано с --no-code).'
+        : 'Показать нечего: файла нет в рабочей копии либо он двоичный.';
+      card.appendChild(el('p', 'empty', why));
     }
     pickBox.appendChild(card);
 
@@ -758,6 +771,12 @@
     lines.push('Память: ' + m.tasksFound + ' ' + plural(m.tasksFound, 'задача', 'задачи', 'задач')
       + ' из истории и ' + (m.exploresFound || 0) + ' ' + plural(m.exploresFound || 0, 'разведка', 'разведки', 'разведок')
       + ' из кэша.');
+    if (m.code && !m.code.off && m.code.embedded) {
+      lines.push('В страницу вшито содержимое ' + m.code.embedded + ' '
+        + plural(m.code.embedded, 'файла', 'файлов', 'файлов')
+        + ' — двойной клик открывает исходник. Отдаёте карту наружу? Соберите с ключом --no-code.');
+    }
+    if (m.code && m.code.off) lines.push('Содержимое файлов не вшито: карта собрана с --no-code.');
     if (lm.linksDropped || lf.linksDropped) lines.push('Часть самых слабых связей не поместилась на карту.');
     if (m.hideKit) lines.push('Папка .claude/ скрыта как служебная (ключ --with-kit покажет её).');
     if (m.kitForced) lines.push('Папка .claude/ показана: без неё карта осталась бы пустой.');
@@ -862,14 +881,29 @@
     return html.join('');
   }
 
+  // Исходник показываем как исходник: моноширинный блок с номерами строк, без подсветки —
+  // подсветка синтаксиса потребовала бы грамматики на каждый язык, а карта языконезависима.
+  function codeToHtml(text) {
+    var lines = String(text).split('\n');
+    var out = [];
+    for (var i = 0; i < lines.length; i++) out.push('<span class="ln">' + (escHtml(lines[i]) || ' ') + '</span>');
+    return '<div class="src">' + out.join('') + '</div>';
+  }
+
   var readerBox = document.getElementById('reader');
   function openDoc(id) {
     var doc = (DATA.docs || {})[id];
     if (!doc) return;
-    document.getElementById('readerKicker').textContent =
-      doc.kind + (doc.date ? ' · ' + doc.date : '');
+    var kicker = doc.kind + (doc.date ? ' · ' + doc.date : '');
+    if (doc.lines) kicker += ' · ' + doc.lines + ' ' + plural(doc.lines, 'строка', 'строки', 'строк');
+    document.getElementById('readerKicker').textContent = kicker;
     document.getElementById('readerTitle').textContent = doc.title || id;
-    document.getElementById('readerBody').innerHTML = mdToHtml(doc.text || '');
+    var body = doc.code ? codeToHtml(doc.text || '') : mdToHtml(doc.text || '');
+    if (doc.clipped) {
+      body += '<p class="clip">Файл длинный — в страницу вшито только начало. Целиком он лежит '
+        + 'в проекте: <code>' + escHtml(doc.title || id) + '</code></p>';
+    }
+    document.getElementById('readerBody').innerHTML = body;
     readerBox.hidden = false;
   }
   function closeDoc() { readerBox.hidden = true; }
