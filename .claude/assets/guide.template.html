@@ -188,6 +188,10 @@
     <span class="cmd">/cckit_plan</span>, <span class="cmd">/cckit_audit</span>, <span class="cmd">/cckit_implement</span>, <span class="cmd">/cckit_review</span>,
     <span class="cmd">/cckit_docs</span>, <span class="cmd">/cckit_faq</span>, <span class="cmd">/cckit_release</span>,
     <span class="cmd">/cckit_commits</span>.</p>
+  <p>Нужно разведать <b>несколько модулей разом</b>, не теряя время? <span class="cmd">/cckit_explore_parallel Модуль1, Модуль2</span>
+    запускает по исследователю на каждый модуль <b>параллельно</b> и сводит их выкладки в общую картину —
+    с разделом о связях между модулями. Так можно только с разведкой (это чтение); писать код параллельно
+    нельзя — там всегда по очереди.</p>
 
   <h2>Агент Кит помнит прошлые задачи</h2>
   <p>Планы и замечания завершённых задач складываются в папку <code>.claude/artifacts/history/</code>.
@@ -264,7 +268,7 @@
     <tr><td><span class="cmd">/cckit_get_instruction</span></td><td>заново разместить эту инструкцию на рабочем столе</td></tr>
   </table>
   <h3>По одному шагу конвейера</h3>
-  <p><span class="cmd">/cckit_explore</span> <span class="cmd">/cckit_plan</span> <span class="cmd">/cckit_audit</span> <span class="cmd">/cckit_implement</span>
+  <p><span class="cmd">/cckit_explore</span> <span class="cmd">/cckit_explore_parallel</span> <span class="cmd">/cckit_plan</span> <span class="cmd">/cckit_audit</span> <span class="cmd">/cckit_implement</span>
     <span class="cmd">/cckit_review</span> <span class="cmd">/cckit_docs</span> <span class="cmd">/cckit_faq</span>
     <span class="cmd">/cckit_commits</span> <span class="cmd">/cckit_release</span></p>
   <h3>Обслуживание набора</h3>
