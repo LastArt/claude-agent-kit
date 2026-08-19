@@ -12,8 +12,9 @@
  *   path   — путь от корня проекта (например ".claude/agents/explorer.md");
  *   group  — "service" (механизм кита) или "memory" (архив прошлых задач в artifacts/history);
  *   hash   — sha256 содержимого. ТОЛЬКО у статичных файлов кита (агенты, хуки, команды, ассеты,
- *            промт оркестратора). Живые файлы (settings.json, профиль, PLAN/REVIEW) не хешируем:
- *            они законно меняются, совпадение всё равно ничего не значило бы.
+ *            промт оркестратора). Живые файлы (settings.json, профиль, PLAN/REVIEW, кэш разведок
+ *            в explores/) не хешируем: они законно меняются, совпадение всё равно ничего
+ *            не значило бы.
  *
  * Что НЕ попадает в реестр (значит — не будет удалено при деинсталляции):
  *   — любой файл, которого нет в мастер-копии кита (~/.claude/agent-kit): чужое добро,
@@ -48,7 +49,8 @@ const projRel = (abs) => toPosix(path.relative(PROJECT_ROOT, abs)); // ".claude/
 const alwaysOurs = (rel) =>
   rel === '.cckit-manifest.json' ||
   rel === 'artifacts/history' || rel.startsWith('artifacts/history/') ||
-  rel.startsWith('artifacts/'); // PLAN/REVIEW/ROADMAP/FAQ_TEMPLATE и снимки задач
+  rel.startsWith('artifacts/') || // PLAN/REVIEW/ROADMAP/FAQ_TEMPLATE и снимки задач
+  rel === 'explores' || rel.startsWith('explores/'); // кэш разведок модулей
 
 function owned(rel) {
   if (alwaysOurs(rel)) return true;
@@ -66,6 +68,7 @@ function classify(rel) {
   ]);
   if (mutable.has(rel)) return { group: 'service', hashed: false };
   if (rel.startsWith('artifacts/')) return { group: 'service', hashed: false }; // живые артефакты
+  if (rel === 'explores' || rel.startsWith('explores/')) return { group: 'service', hashed: false }; // кэш разведок
   return { group: 'service', hashed: true };                                     // механизм кита
 }
 
@@ -96,6 +99,11 @@ walk(KIT_DIR);
 // фиксируем как каталог, чтобы режим полного удаления знал про неё.
 const HIST = '.claude/artifacts/history';
 if (!entries.some((e) => e.path === HIST)) entries.push({ path: HIST, group: 'memory', dir: true });
+
+// Кэш разведок тоже наполняется после установки (файл на модуль). Фиксируем каталогом, чтобы
+// снятие кита убирало и разведки, появившиеся позже.
+const EXPL = '.claude/explores';
+if (!entries.some((e) => e.path === EXPL)) entries.push({ path: EXPL, group: 'service', dir: true });
 
 // Сам манифест — служебный, уезжает вместе с китом.
 entries.push({ path: '.claude/.cckit-manifest.json', group: 'service' });

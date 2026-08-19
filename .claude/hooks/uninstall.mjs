@@ -134,7 +134,9 @@ function pruneEmpty(dir) {
     let st; try { st = statSync(p); } catch { continue; }
     if (st.isDirectory()) pruneEmpty(p);
   }
-  try { if (readdirSync(dir).length === 0) rmSync(dir, { force: true }); } catch { /* не пусто или нельзя */ }
+  // recursive обязателен: без него rmSync на каталоге падает с ERR_FS_EISDIR даже при force.
+  // Каталог здесь уже проверен как пустой, так что рекурсия ничего лишнего не унесёт.
+  try { if (readdirSync(dir).length === 0) rmSync(dir, { recursive: true, force: true }); } catch { /* не пусто или нельзя */ }
 }
 pruneEmpty(KIT_DIR);
 
@@ -150,7 +152,15 @@ if (failed.length) { out(`Не удалось удалить (${failed.length}):
 if (kitGone) {
   out('Папка .claude/ удалена полностью — кита в проекте больше нет.');
 } else {
-  out(`Папка .claude/ оставлена: в ней есть не принадлежащие киту файлы (${leftovers.join(', ') || 'скрытые'}). Это не ошибка — кит не трогает чужое.`);
+  // Причин остаться две: мы сами что-то намеренно сберегли (память, правки) или внутри лежит чужое.
+  // Раньше сообщение всегда валило это на «чужие файлы» — теперь называем настоящую причину.
+  const mine = [];
+  if (MODE === 'service' && kept.length) mine.push('память');
+  if (KEEP_MODIFIED && modified.length) mine.push('ваши правки');
+  const why = mine.length
+    ? `в ней осталось сохранённое намеренно (${mine.join(' и ')}) и, возможно, чужие файлы`
+    : 'в ней есть не принадлежащие киту файлы';
+  out(`Папка .claude/ оставлена: ${why} (${leftovers.join(', ') || 'скрытые'}). Это не ошибка — кит не трогает лишнего.`);
 }
 out('');
 out('Глобальная установка на машине (~/.claude/agent-kit и команды /cckit_* в других проектах) не затронута.');
