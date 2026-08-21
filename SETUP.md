@@ -32,9 +32,12 @@ claude-agent-kit/
     │                        update.mjs / uninstall.mjs — обновление и удаление набора
     │                        verify.mjs — прогон проверок проекта, пишет artifacts/VERIFY.json
     │                        gate.mjs — Stop-гейт: не даёт закончить ход с красными проверками
-    │                        make-guide.mjs, git-status.mjs, stats.mjs
+    │                        stubs.mjs — раскладывает заглушки рабочих файлов
+    │                        make-guide.mjs, git-status.mjs, stats.mjs, map.mjs
     ├── agents/              девять субагентов
-    └── artifacts/           PLAN.md, REVIEW.md, FAQ_TEMPLATE.md
+    ├── assets/stubs/        эталонные заглушки PLAN/REVIEW/SECURITY/FAQ и INDEX разведок
+    └── artifacts/           PLAN.md, REVIEW.md, SECURITY.md, FAQ_TEMPLATE.md
+                             (рабочие файлы: в исходниках набора их нет, их кладёт stubs.mjs)
 ```
 
 Единственный источник команд — `.claude/commands/`. Поэтому в развёрнутом проекте видны все
