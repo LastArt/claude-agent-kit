@@ -23,6 +23,7 @@
       "Bash(node .claude/hooks/verify.mjs --fresh)",
       "Bash(node .claude/hooks/verify.mjs --only:*)",
       "Bash(node .claude/hooks/verify.mjs --only *)",
+	  "Bash(node .claude/hooks/verify.mjs --show)",
       "Bash(node .claude/hooks/gate.mjs)",
       "Bash(node .claude/hooks/gate.mjs --status)",
       "Bash(node .claude/hooks/gate.mjs --dry)",
