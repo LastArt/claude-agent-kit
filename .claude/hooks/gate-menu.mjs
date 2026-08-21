@@ -269,17 +269,29 @@ async function main() {
     const answer = (await rl.question('  Что делаем? ')).trim();
     console.log('');
     if (answer === '0' || answer === '') { break; }
-    else if (answer === '1') showList();
-    else if (answer === '2') confirmList();
-    else if (answer === '3') runChecks();
-    else if (answer === '4') {
-      const task = (await rl.question('  Над чем работаете (одной строкой)? ')).trim();
-      run(GATE, ['--arm', task || 'задача без названия']);
-    } else if (answer === '5') run(GATE, ['--disarm']);
-    else if (answer === '6') openProfile();
-    else if (answer === '8') await toggleCheck(rl);
-    else if (answer === '7') about();
-    else console.log('  Не понял. Введите цифру из списка.');
+    // Ошибка внутри пункта не должна закрывать окно: человек в нём работает, а закрывшееся
+    // на глазах окно не оставляет даже текста, по которому можно понять, что случилось.
+    try {
+      if (answer === '1') showList();
+      else if (answer === '2') confirmList();
+      else if (answer === '3') runChecks();
+      else if (answer === '4') {
+        const task = (await rl.question('  Над чем работаете (одной строкой)? ')).trim();
+        run(GATE, ['--arm', task || 'задача без названия']);
+      } else if (answer === '5') run(GATE, ['--disarm']);
+      else if (answer === '6') openProfile();
+      else if (answer === '8') await toggleCheck(rl);
+      else if (answer === '7') about();
+      else console.log('  Не понял. Введите цифру из списка.');
+    } catch (e) {
+      console.log('');
+      console.log('  Не получилось выполнить этот пункт:');
+      console.log('  ' + (e && e.message ? e.message : e));
+      console.log('');
+      console.log('  Меню при этом работает — можно попробовать другой пункт.');
+      console.log('  Если повторяется, покажите эти строки разработчику:');
+      console.log('  ' + String((e && e.stack ? e.stack : '').split('\n').slice(1, 3).join(' | ')).slice(0, 200));
+    }
     console.log('');
     await rl.question('  Enter — вернуться в меню… ');
   }
@@ -288,6 +300,16 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.log(`  Что-то пошло не так: ${e && e.message ? e.message : e}`);
-  process.exit(0);
+  // Падение самого меню тоже не должно оставлять человека наедине с закрывшимся окном:
+  // печатаем причину целиком и ждём Enter, а не выходим молча.
+  console.log('');
+  console.log('  Меню остановилось из-за ошибки:');
+  console.log('  ' + (e && e.message ? e.message : e));
+  if (e && e.stack) console.log('  ' + e.stack.split('\n').slice(1, 4).join('\n  '));
+  console.log('');
+  console.log('  Скопируйте эти строки — по ним видно, что именно сломалось.');
+  try {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question('  Enter — закрыть окно… ').then(() => { rl.close(); process.exit(0); });
+  } catch { process.exit(0); }
 });
