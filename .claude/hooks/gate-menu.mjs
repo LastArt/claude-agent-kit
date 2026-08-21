@@ -31,6 +31,74 @@ const run = (script, args = []) =>
 const quiet = (script, args = []) =>
   spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', cwd: path.dirname(KIT) });
 
+/** Машинный список проверок: печатает его человеку уже это меню, своими словами. */
+function listChecks() {
+  const r = quiet(VERIFY, ['--list']);
+  try { return JSON.parse(String(r.stdout || '').trim()); } catch { return null; }
+}
+
+/** Список так, как его прочтёт человек: пронумерованный, с пояснением, зачем это всё. */
+function showList() {
+  const j = listChecks();
+  if (!j || j.checks.length === 0) {
+    console.log('  Список пуст — проверять нечего, помощник работает как обычно.');
+    console.log('  Чтобы завести проверки, откройте файл (пункт 6) или попросите помощника');
+    console.log('  подобрать их под ваш проект.');
+    return;
+  }
+  console.log('  Проверок в списке: ' + j.checks.length + '. Идут сверху вниз и останавливаются');
+  console.log('  на первой упавшей — поэтому быстрые стоит ставить первыми.');
+  console.log('');
+  j.checks.forEach((c, i) => {
+    console.log('   ' + (i + 1) + '. ' + c.name);
+    console.log('      запустит:  ' + c.cmd);
+    if (c.timeout) console.log('      ждать до:  ' + c.timeout + ' с');
+  });
+  console.log('');
+  console.log(j.accepted
+    ? '  Список подтверждён — эти команды разрешено выполнять.'
+    : '  Список НЕ подтверждён: пока вы не скажете «да» (пункт 2), не выполнится ни одна.');
+}
+
+/** Подтверждение: сначала объясняем, что сейчас произойдёт, потом отдаём терминал хуку. */
+function confirmList() {
+  const j = listChecks();
+  if (!j || j.checks.length === 0) { console.log('  Список пуст — подтверждать нечего.'); return; }
+  if (j.accepted) {
+    console.log('  Этот список уже подтверждён. Заново нужно только после правок.');
+    console.log('');
+  }
+  console.log('  Сейчас покажу команды и спрошу согласие. Это тот случай, когда решаете вы:');
+  console.log('  команды выполнятся на вашем компьютере по-настоящему.');
+  console.log('');
+  run(VERIFY, ['--accept']);
+}
+
+/** Прогон: ход дела виден как есть, а итог переводим на человеческий. */
+function runChecks() {
+  const j = listChecks();
+  if (!j || j.checks.length === 0) { console.log('  Список пуст — запускать нечего.'); return; }
+  if (!j.accepted) {
+    console.log('  Список не подтверждён, поэтому ничего не выполнится. Сначала пункт 2.');
+    return;
+  }
+  console.log('  Запускаю проверки: ' + j.checks.length + ' шт.');
+  console.log('');
+  const code = run(VERIFY).status;
+  console.log('');
+  if (code === 0) {
+    console.log('  ✓ Всё прошло. Помощник сможет закончить работу.');
+  } else if (code === 4) {
+    console.log('  ~ Прошло не всё: часть проверок пропущена — обычно потому, что нужной');
+    console.log('    программы нет на этом компьютере. Это не ошибка в вашем коде.');
+  } else if (code === 1) {
+    console.log('  ✗ Одна из проверок не прошла — какая именно, написано выше.');
+    console.log('    Это и есть та ситуация, в которой помощника не выпустят с работы.');
+  } else {
+    console.log('  Проверить не удалось: список пуст, не подтверждён или повреждён (см. выше).');
+  }
+}
+
 function state() {
   const out = { checks: 0, accepted: false, armed: false, task: '', verify: 'none', status: '' };
   const h = quiet(VERIFY, ['--hash']);
@@ -119,9 +187,9 @@ async function main() {
     const answer = (await rl.question('  Что делаем? ')).trim();
     console.log('');
     if (answer === '0' || answer === '') { break; }
-    else if (answer === '1') run(VERIFY, ['--show']);
-    else if (answer === '2') run(VERIFY, ['--accept']);
-    else if (answer === '3') run(VERIFY);
+    else if (answer === '1') showList();
+    else if (answer === '2') confirmList();
+    else if (answer === '3') runChecks();
     else if (answer === '4') {
       const task = (await rl.question('  Над чем работаете (одной строкой)? ')).trim();
       run(GATE, ['--arm', task || 'задача без названия']);

@@ -79,6 +79,7 @@ const NO_PROBE = new Set(['node', 'cd', 'echo', 'set', 'export', 'call', 'source
 
 try {
   if (process.argv.includes('--hash')) modeHash();
+  else if (process.argv.includes('--list')) modeList();
   else if (process.argv.includes('--init')) modeInit();
   else if (process.argv.includes('--show')) modeShow();
   else if (process.argv.includes('--accept')) {
@@ -257,6 +258,20 @@ function modeHash() {
     ? { hash: st.canon.hash, accepted: st.accepted, count: st.block.checks.length }
     : { hash: null, accepted: false, count: 0 };
   console.log(JSON.stringify(out));
+  process.exit(0);
+}
+
+// Машинный список проверок для меню (gate-menu.mjs): человеку его печатает меню, своими
+// словами. Отдельный режим нужен, чтобы меню не разбирало профиль второй раз.
+function modeList() {
+  const st = load();
+  if (st.fatal || st.empty || !st.block) { console.log(JSON.stringify({ checks: [], accepted: false })); process.exit(0); }
+  console.log(JSON.stringify({
+    accepted: st.accepted,
+    hash: st.canon ? st.canon.hash : null,
+    timeout: st.block.timeout || null,
+    checks: st.block.checks.map((c) => ({ name: c.name, cmd: c.cmd, timeout: c.timeout || null }))
+  }));
   process.exit(0);
 }
 
