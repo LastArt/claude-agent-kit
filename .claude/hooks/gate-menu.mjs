@@ -14,7 +14,7 @@
  * Без внешних зависимостей. Ничего не делает молча: каждый пункт показывает, что запустил.
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
@@ -24,6 +24,49 @@ const KIT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VERIFY = path.join(KIT, 'hooks', 'verify.mjs');
 const GATE = path.join(KIT, 'hooks', 'gate.mjs');
 const PROFILE = path.join(KIT, 'PROJECT_PROFILE.md');
+
+/**
+ * `--launch` — открыть меню в НОВОМ окне терминала и сразу выйти.
+ *
+ * Зачем режим, а не строчка в тексте команды: возня с окнами платформозависима и полна ловушек
+ * (кириллица в заголовке ломает `start`, из Git Bash он не отделяется и льёт баннер в чужой
+ * терминал, macOS требует `open -a Terminal`). Такое место должно быть одно и проверяться,
+ * а не переписываться в промте команды на каждой платформе заново.
+ *
+ * Окно нужно именно настоящее: подтверждение набора команд спрашивает «да» с клавиатуры
+ * и без TTY отказывается работать.
+ */
+if (process.argv.includes('--launch')) {
+  const p = process.platform;
+  const tries = p === 'win32'
+    // Заголовок латиницей намеренно: кириллица здесь ломает разбор аргументов start.
+    ? [['cmd', ['/c', 'start', 'Claude Agent Kit', 'cmd', '/k', path.join(KIT, 'gate.bat')]]]
+    : p === 'darwin'
+      ? [['open', ['-a', 'Terminal', path.join(KIT, 'gate.sh')]]]
+      : [
+        ['x-terminal-emulator', ['-e', 'bash', path.join(KIT, 'gate.sh')]],
+        ['gnome-terminal', ['--', 'bash', path.join(KIT, 'gate.sh')]],
+        ['konsole', ['-e', 'bash', path.join(KIT, 'gate.sh')]],
+        ['xterm', ['-e', 'bash', path.join(KIT, 'gate.sh')]],
+      ];
+
+  let ok = false;
+  for (const [cmd, args] of tries) {
+    try {
+      const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+      child.unref();          // не держим родителя: команда должна вернуться сразу
+      ok = true;
+      break;
+    } catch { /* пробуем следующий терминал */ }
+  }
+  if (ok) {
+    console.log('[gate] меню открыто в отдельном окне.');
+  } else {
+    console.log('[gate] окно открыть не удалось (нет графической среды?). Запустите вручную:');
+    console.log(p === 'win32' ? `  ${path.join(KIT, 'gate.bat')}` : `  bash ${path.join(KIT, 'gate.sh')}`);
+  }
+  process.exit(0);
+}
 
 const run = (script, args = []) =>
   spawnSync(process.execPath, [script, ...args], { stdio: 'inherit', cwd: path.dirname(KIT) });
