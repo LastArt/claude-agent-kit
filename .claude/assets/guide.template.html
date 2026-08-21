@@ -43,6 +43,14 @@
   .role{font-weight:700}
   .m{white-space:nowrap;font-weight:600}
   .m small{color:var(--muted);font-weight:400}
+  pre.yaml{background:#141413;color:#f0eee6;border-radius:10px;padding:14px 18px;overflow-x:auto;
+    font:13.5px/1.65 ui-monospace,"Cascadia Code",Consolas,monospace;margin:14px 0}
+  pre.yaml .c{color:#9b9384}
+  pre.yaml b{color:#ffb27a;font-weight:600}
+  .openfile{display:inline-block;background:var(--accent);color:#fff;text-decoration:none;
+    border-radius:8px;padding:7px 14px;font-weight:600;font-size:14px;margin:4px 8px 4px 0}
+  .openfile.ghost{background:var(--surface);color:var(--text);border:1px solid var(--border)}
+  .pathline{font:12.5px ui-monospace,Consolas,monospace;color:var(--muted);word-break:break-all;margin:6px 0 0}
   footer{text-align:center;color:var(--muted);font-size:13px;margin-top:44px;padding-top:16px;border-top:1px solid var(--border)}
 </style>
 </head>
@@ -271,6 +279,73 @@
     ответ помощника в десятиминутное ожидание. Долгое запускайте отдельно, когда захотите.</div>
   <p>Посмотреть состояние, включить или выключить — командой
     <span class="cmd">/cckit_gate</span>. Она же покажет, что именно настроено и проходит ли оно.</p>
+
+  <h3>Где список и как он выглядит</h3>
+  <p>Список живёт в файле настроек проекта, в разделе «Команды проекта»:</p>
+  <p>
+    <a class="openfile" href="{{PROFILE_VSCODE}}">Открыть файл для правки</a>
+    <a class="openfile ghost" href="{{PROFILE_FILE}}">Просто посмотреть</a>
+  </p>
+  <p class="pathline">{{PROFILE_PATH}}</p>
+  <p>Первая кнопка открывает файл в VS&nbsp;Code — там его и правят. Вторая показывает содержимое
+    в браузере, без возможности изменить. Не сработали кнопки — скопируйте путь выше и откройте
+    файл любым редактором.</p>
+
+  <p>Внутри найдите блок между двумя пометками <code>CCKIT:VERIFY</code>. Сразу после установки
+    он выглядит так — пустым:</p>
+  <pre class="yaml">&lt;!-- CCKIT:VERIFY --&gt;
+timeout: 300
+checks: []
+<span class="c"># - name: тесты</span>
+<span class="c">#   cmd: npm test</span>
+&lt;!-- /CCKIT:VERIFY --&gt;</pre>
+  <p><code>checks: []</code> — квадратные скобки означают «список пуст», турникет выключен.
+    Строки, начинающиеся с решётки, — это заготовка-пример: она ничего не делает, пока вы её
+    не перепишете. Убрать решётку и оставить как есть <b>нельзя</b> — команда <code>npm test</code>
+    подойдёт не всякому проекту. Пишите свои.</p>
+
+  <p>Заполненный блок выглядит так:</p>
+  <pre class="yaml">&lt;!-- CCKIT:VERIFY --&gt;
+timeout: 300
+checks:
+  - <b>name:</b> стиль
+    <b>cmd:</b> npm run lint
+  - <b>name:</b> тесты
+    <b>cmd:</b> npm test -- --run
+    <b>timeout:</b> 120
+&lt;!-- /CCKIT:VERIFY --&gt;</pre>
+  <p>Что здесь что:</p>
+  <ul>
+    <li><b>name</b> — как проверка называется. Это имя вы увидите, если она не пройдёт: чем понятнее,
+      тем быстрее сообразите, что сломалось.</li>
+    <li><b>cmd</b> — команда, которую по-настоящему выполнят у вас на компьютере. Ровно та, что вы
+      набрали бы в терминале сами.</li>
+    <li><b>timeout</b> — сколько секунд ждать эту проверку. Не указан — берётся общий сверху
+      (в примере 300). Сумма всех должна уложиться в 870 секунд.</li>
+  </ul>
+  <p>Проверки идут <b>сверху вниз и останавливаются на первой упавшей</b>, поэтому первыми ставьте
+    быстрые: незачем ждать тесты, если код не собирается.</p>
+
+  <h3>Как выбрать проверки</h3>
+  <p>Годится любая команда, которая <b>сама умеет отличать «хорошо» от «плохо»</b> — то есть
+    завершается с ошибкой, когда что-то не так. Тесты, проверка стиля, проверка типов, сборка.
+    Не годится то, что просто печатает текст и всегда завершается успешно, — турникет сочтёт
+    такую проверку пройденной всегда.</p>
+  <table>
+    <tr><th>Проект на…</th><th>Что обычно вписывают</th></tr>
+    <tr><td>JavaScript / TypeScript</td><td><code>npm run lint</code>, <code>npx tsc --noEmit</code>, <code>npm test</code></td></tr>
+    <tr><td>Python</td><td><code>ruff check .</code>, <code>mypy .</code>, <code>pytest -q</code></td></tr>
+    <tr><td>Go</td><td><code>go vet ./...</code>, <code>go test ./...</code></td></tr>
+    <tr><td>любой</td><td>та команда, которой вы и так проверяете работу перед отправкой</td></tr>
+  </table>
+  <p>Нет на компьютере нужной программы — проверка не провалится, а <b>пропустится</b>: турникет
+    скажет «прошло не всё» и пропустит помощника дальше. Так набор ведёт себя на чужих машинах,
+    где стоит не всё то же самое, что у вас.</p>
+
+  <div class="note"><b>После правки — подтвердите.</b> Список меняли вы, но выполняться он начнёт
+    только после вашего «да» в терминале: <span class="cmd">node .claude/hooks/verify.mjs --accept</span>.
+    Команда сначала покажет все команды из списка, потом спросит. Изменили список позже — спросит
+    заново: это защита от того, чтобы кто-то дописал туда строку незаметно.</div>
 
   <h2>Безопасность</h2>
   <p>Безопасность здесь — не громкие обещания, а несколько простых правил, встроенных в набор.

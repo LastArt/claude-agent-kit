@@ -45,10 +45,20 @@ if (!tpl) { console.log('  ! guide.template.html не найден — инст�
 const version = (tryRead(path.join(KIT, 'VERSION')) || '').trim() || '?';
 // В шаблоне картинки заданы относительными путями (чтобы сам шаблон открывался как страница).
 // Для готового guide.html вшиваем их base64 — файл становится самодостаточным.
+// Путь к профилю ЭТОЙ установки: в инструкции на него стоит рабочая ссылка, чтобы человек
+// не искал файл руками. vscode:// открывает его сразу на правку, file:// — просто показывает
+// (браузер markdown не редактирует), поэтому в странице даны обе плюс путь текстом для копирования.
+const profilePath = path.join(KIT, 'PROJECT_PROFILE.md');
+const profilePosix = profilePath.split('\\').join('/');
+const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 const html = tpl
   .replaceAll('src="header.png"', `src="${dataUri(path.join(ASSETS, 'header.png'), 'image/png')}"`)
   .replaceAll('href="favicon.ico"', `href="${dataUri(path.join(ASSETS, 'favicon.ico'), 'image/x-icon')}"`)
-  .replaceAll('{{VERSION}}', version);
+  .replaceAll('{{VERSION}}', version)
+  .replaceAll('{{PROFILE_PATH}}', escHtml(profilePath))
+  .replaceAll('{{PROFILE_VSCODE}}', 'vscode://file/' + encodeURI(profilePosix))
+  .replaceAll('{{PROFILE_FILE}}', 'file:///' + encodeURI(profilePosix.replace(/^\//, '')));
 
 const guidePath = path.join(KIT, 'guide.html');
 try {
