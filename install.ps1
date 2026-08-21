@@ -14,16 +14,38 @@ $dest = Join-Path $env:USERPROFILE '.claude'
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
 # 1) Master kit -> ~/.claude/agent-kit (fully refreshed)
+#
+# Copy strictly by the ship.list whitelist: anything not listed does not travel. The old way
+# copied the whole .claude folder and deleted the unwanted bits afterwards, and that blacklist
+# fell behind on every new file - which is how working artifacts and generated pages ended up
+# in other people's projects.
 $kit = Join-Path $dest 'agent-kit'
 if (Test-Path $kit) { Remove-Item -Recurse -Force $kit }
-Copy-Item -Recurse (Join-Path $src '.claude') $kit
+New-Item -ItemType Directory -Force -Path $kit | Out-Null
 
-# Files that belong to THIS repository only and must never travel into user projects:
-#   settings.local.json - permissions granted on this machine
-#   CLAUDE.md           - instructions for developing the kit itself
-foreach ($name in @('settings.local.json', 'CLAUDE.md')) {
-  $p = Join-Path $kit $name
-  if (Test-Path $p) { Remove-Item -Force $p }
+$shipList = Join-Path $src 'ship.list'
+if (-not (Test-Path $shipList)) {
+  Write-Host "  ! no ship.list next to the installer - nothing tells me what to copy. Aborting." -ForegroundColor Red
+  exit 1
+}
+
+foreach ($raw in Get-Content $shipList) {
+  $entry = ($raw -split '#', 2)[0].Trim()
+  if ($entry -eq '') { continue }
+  $isDir = $entry.EndsWith('/')
+  $name  = $entry.TrimEnd('/')
+  $from  = Join-Path (Join-Path $src '.claude') $name
+  if (-not (Test-Path $from)) {
+    Write-Host "  ! ship.list asks for '$entry' but it does not exist - skipping" -ForegroundColor Yellow
+    continue
+  }
+  $to = Join-Path $kit $name
+  if ($isDir) {
+    New-Item -ItemType Directory -Force -Path $to | Out-Null
+    Copy-Item -Recurse -Force (Join-Path $from '*') $to
+  } else {
+    Copy-Item -Force $from $to
+  }
 }
 
 # Machine-local acceptance files: a run report, a confirmed command block and a gate state
@@ -64,6 +86,18 @@ if (Test-Path $template) {
   Copy-Item -Force $template (Join-Path $kit 'PROJECT_PROFILE.md')
   Remove-Item -Force $template
 }
+
+# Postcondition: the whitelist may have fallen behind the kit structure. Check what the kit
+# cannot live without - aborting loudly here beats leaving a half-installed kit behind.
+foreach ($must in @('VERSION', 'settings.json', 'ORCHESTRATOR_PROMPT.md', 'PROJECT_PROFILE.md',
+                    'agents\explorer.md', 'hooks\check-syntax.mjs', 'commands\cckit_help.md')) {
+  if (-not (Test-Path (Join-Path $kit $must))) {
+    Write-Host "  ! master copy has no $must - ship.list fell behind the kit structure." -ForegroundColor Red
+    Write-Host "    Installation aborted: an incomplete kit is worse than none." -ForegroundColor Red
+    exit 1
+  }
+}
+
 $kitVersion = 'unknown'
 $versionFile = Join-Path $kit 'VERSION'
 if (Test-Path $versionFile) { $kitVersion = (Get-Content $versionFile -TotalCount 1).Trim() }

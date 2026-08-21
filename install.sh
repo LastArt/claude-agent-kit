@@ -13,13 +13,35 @@ DEST="$HOME/.claude"
 mkdir -p "$DEST"
 
 # 1) Мастер-кит -> ~/.claude/agent-kit (полностью обновляем)
+#
+# Копируем строго по белому списку ship.list: что не перечислено — не едет. Раньше копировалась
+# вся папка .claude, а лишнее вычищалось следом, и этот чёрный список отставал от реальности
+# при каждом новом файле — так в чужие проекты уезжали рабочие артефакты и собранные страницы.
 rm -rf "$DEST/agent-kit"
-cp -r "$SRC/.claude" "$DEST/agent-kit"
+mkdir -p "$DEST/agent-kit"
 
-# Файлы, принадлежащие только этому репозиторию; в чужие проекты им нельзя:
-#   settings.local.json — разрешения, выданные на ЭТОЙ машине
-#   CLAUDE.md           — инструкции по разработке самого набора
-rm -f "$DEST/agent-kit/settings.local.json" "$DEST/agent-kit/CLAUDE.md"
+SHIP="$SRC/ship.list"
+if [ ! -f "$SHIP" ]; then
+  echo "  ! рядом с установщиком нет ship.list — не знаю, что копировать. Прерываю."
+  exit 1
+fi
+
+while IFS= read -r raw || [ -n "$raw" ]; do
+  entry="${raw%%#*}"
+  entry="$(printf '%s' "$entry" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  if [ -z "$entry" ]; then continue; fi
+  name="${entry%/}"
+  from="$SRC/.claude/$name"
+  if [ ! -e "$from" ]; then
+    echo "  ! ship.list просит '$entry', а такого файла нет — пропускаю"
+    continue
+  fi
+  case "$entry" in
+    */) mkdir -p "$DEST/agent-kit/$name"
+        cp -r "$from/." "$DEST/agent-kit/$name/" ;;
+    *)  cp -f "$from" "$DEST/agent-kit/$name" ;;
+  esac
+done < "$SHIP"
 
 # Файлы машинной приёмки принадлежат ЭТОЙ машине: снимок прогона (в нём может быть вывод
 # ваших тестов), подтверждение блока команд и состояние гейта. Раздай их — и новый проект
@@ -55,6 +77,17 @@ rm -rf "$DEST/agent-kit/artifacts/history"
 if [ -f "$DEST/agent-kit/PROJECT_PROFILE.template.md" ]; then
   mv -f "$DEST/agent-kit/PROJECT_PROFILE.template.md" "$DEST/agent-kit/PROJECT_PROFILE.md"
 fi
+
+# Постусловие: белый список мог отстать от структуры набора. Проверяем то, без чего кит мёртв, —
+# лучше внятно прерваться здесь, чем оставить пользователя с наполовину установленным набором.
+for must in VERSION settings.json ORCHESTRATOR_PROMPT.md PROJECT_PROFILE.md \
+            agents/explorer.md hooks/check-syntax.mjs commands/cckit_help.md; do
+  if [ ! -e "$DEST/agent-kit/$must" ]; then
+    echo "  ! в мастер-копии нет $must — ship.list отстал от структуры набора."
+    echo "    Установка прервана: неполный кит хуже отсутствующего."
+    exit 1
+  fi
+done
 
 KIT_VERSION="$(head -n 1 "$DEST/agent-kit/VERSION" 2>/dev/null | tr -d '\r\n' || true)"
 echo "  + мастер-кит:      $DEST/agent-kit (версия ${KIT_VERSION:-неизвестна})"
