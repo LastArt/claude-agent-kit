@@ -175,8 +175,8 @@ async function toggleCheck(rl) {
   run(VERIFY, [c.enabled ? '--disable' : '--enable', String(num)]);
   if (!c.enabled) {
     console.log('');
-    console.log('  Проверка включена, но пока не подтверждена — это разные вещи.');
-    console.log('  Подтвердите список (пункт 2), иначе выполняться он не будет.');
+    console.log('  Готово. Заново подтверждать не нужно: команды не менялись, вы лишь сказали,');
+    console.log('  что эта строка теперь выполняется.');
   }
 }
 
