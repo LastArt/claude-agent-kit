@@ -18,6 +18,8 @@ ORCHESTRATOR_PROMPT.md
 CUSTOMIZE.md
 WELCOME.md
 PROJECT_PROFILE.template.md   # в мастер-копии станет PROJECT_PROFILE.md
+gate.bat                      # меню приёмки для человека: Windows
+gate.sh                       # то же для macOS и Linux
 
 agents/
 commands/
