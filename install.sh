@@ -27,6 +27,28 @@ rm -f "$DEST/agent-kit/settings.local.json" "$DEST/agent-kit/CLAUDE.md"
 rm -f "$DEST/agent-kit/artifacts/VERIFY.json" "$DEST/agent-kit/artifacts/VERIFY.lock" \
       "$DEST/agent-kit/artifacts/GATE_STATE.json"
 
+# Артефакты задачи и кэш разведок — наработка ЭТОГО репозитория: в них лежит то, над чем мы
+# работаем прямо сейчас, а не пустая заготовка. В мастер-копию всегда кладём эталонные заглушки
+# из assets/stubs, иначе новый проект стартует с чужим планом, чужим ревью и чужой разведкой.
+# В развёрнутом ките сами заглушки не нужны — папку убираем следом.
+STUBS="$DEST/agent-kit/assets/stubs"
+if [ -d "$STUBS" ]; then
+  for name in PLAN REVIEW SECURITY; do
+    if [ -f "$STUBS/$name.md" ]; then
+      cp -f "$STUBS/$name.md" "$DEST/agent-kit/artifacts/$name.md"
+    fi
+  done
+  mkdir -p "$DEST/agent-kit/explores"
+  rm -f "$DEST/agent-kit/explores/"*.md
+  if [ -f "$STUBS/explores-INDEX.md" ]; then
+    cp -f "$STUBS/explores-INDEX.md" "$DEST/agent-kit/explores/INDEX.md"
+  fi
+  rm -rf "$STUBS"
+fi
+
+# История задач — память этого репозитория, а не часть механизма.
+rm -rf "$DEST/agent-kit/artifacts/history"
+
 # PROJECT_PROFILE.md в этом репозитории описывает САМ набор. Если раздать его как есть,
 # каждый новый проект получит профиль с чужими фактами — поэтому в мастер-копию всегда
 # кладётся пустой шаблон.

@@ -30,3 +30,6 @@ node_modules/
 .claude/artifacts/VERIFY.json
 .claude/artifacts/VERIFY.lock
 .claude/artifacts/GATE_STATE.json
+
+# Роадмап разработки набора: рабочий документ, не часть продукта.
+CCKIT_UPGRADE.md

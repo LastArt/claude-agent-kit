@@ -34,6 +34,28 @@ foreach ($name in @('artifacts\VERIFY.json', 'artifacts\VERIFY.lock', 'artifacts
   if (Test-Path $p) { Remove-Item -Force $p }
 }
 
+# Task artifacts and the explore cache are THIS repository's own work in progress, not blank
+# forms. The master copy always gets the stubs from assets/stubs instead - otherwise every new
+# project would start with someone else's plan, review and reconnaissance. A deployed kit has
+# no use for the stubs themselves, so the folder goes right after.
+$stubs = Join-Path $kit 'assets\stubs'
+if (Test-Path $stubs) {
+  foreach ($name in @('PLAN', 'REVIEW', 'SECURITY')) {
+    $stub = Join-Path $stubs "$name.md"
+    if (Test-Path $stub) { Copy-Item -Force $stub (Join-Path $kit "artifacts\$name.md") }
+  }
+  $explores = Join-Path $kit 'explores'
+  New-Item -ItemType Directory -Force -Path $explores | Out-Null
+  Get-ChildItem -Path $explores -Filter *.md -File | Remove-Item -Force
+  $idx = Join-Path $stubs 'explores-INDEX.md'
+  if (Test-Path $idx) { Copy-Item -Force $idx (Join-Path $explores 'INDEX.md') }
+  Remove-Item -Recurse -Force $stubs
+}
+
+# Task history is this repository's own memory, not part of the mechanism.
+$history = Join-Path $kit 'artifacts\history'
+if (Test-Path $history) { Remove-Item -Recurse -Force $history }
+
 # PROJECT_PROFILE.md in this repo describes the KIT itself. Shipping it would give every
 # new project a profile full of someone else's facts, so the master copy always carries
 # the blank template instead.
