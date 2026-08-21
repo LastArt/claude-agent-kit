@@ -16,6 +16,19 @@
       "Bash(node .claude/hooks/stats.mjs --all)",
       "Bash(node .claude/hooks/map.mjs)",
       "Bash(node .claude/hooks/map.mjs --open)",
+      "Bash(node .claude/hooks/verify.mjs)",
+      "Bash(node .claude/hooks/verify.mjs --dry)",
+      "Bash(node .claude/hooks/verify.mjs --selftest)",
+      "Bash(node .claude/hooks/verify.mjs --init)",
+      "Bash(node .claude/hooks/verify.mjs --fresh)",
+      "Bash(node .claude/hooks/verify.mjs --only:*)",
+      "Bash(node .claude/hooks/verify.mjs --only *)",
+      "Bash(node .claude/hooks/gate.mjs)",
+      "Bash(node .claude/hooks/gate.mjs --status)",
+      "Bash(node .claude/hooks/gate.mjs --dry)",
+      "Bash(node .claude/hooks/gate.mjs --selftest)",
+      "Bash(node .claude/hooks/gate.mjs --arm:*)",
+      "Bash(node .claude/hooks/gate.mjs --arm *)",
       "Edit(.claude/artifacts/**)",
       "Write(.claude/artifacts/**)"
     ],
@@ -34,7 +47,26 @@
       "Write(**/*.pem)",
       "Read(**/*.key)",
       "Edit(**/*.key)",
-      "Write(**/*.key)"
+      "Write(**/*.key)",
+      "Bash(git push)",
+      "Bash(git push:*)",
+      "Bash(git push *)",
+      "Bash(git reset --hard)",
+      "Bash(git reset --hard:*)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean)",
+      "Bash(git clean:*)",
+      "Bash(git clean *)",
+      "Write(.claude/artifacts/VERIFY.json)",
+      "Edit(.claude/artifacts/VERIFY.json)",
+      "Write(.claude/artifacts/VERIFY.lock)",
+      "Edit(.claude/artifacts/VERIFY.lock)",
+      "Write(.claude/artifacts/GATE_STATE.json)",
+      "Edit(.claude/artifacts/GATE_STATE.json)",
+      "Write(.claude/settings.local.json)",
+      "Edit(.claude/settings.local.json)",
+      "Write(.claude/settings.json)",
+      "Edit(.claude/settings.json)"
     ]
   },
   "hooks": {
@@ -68,8 +100,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/git-status.mjs",
-            "timeout": 15
+            "command": "node .claude/hooks/gate.mjs",
+            "timeout": 900
           }
         ]
       }

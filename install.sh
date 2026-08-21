@@ -21,6 +21,12 @@ cp -r "$SRC/.claude" "$DEST/agent-kit"
 #   CLAUDE.md           — инструкции по разработке самого набора
 rm -f "$DEST/agent-kit/settings.local.json" "$DEST/agent-kit/CLAUDE.md"
 
+# Файлы машинной приёмки принадлежат ЭТОЙ машине: снимок прогона (в нём может быть вывод
+# ваших тестов), подтверждение блока команд и состояние гейта. Раздай их — и новый проект
+# стартует с чужим «принято».
+rm -f "$DEST/agent-kit/artifacts/VERIFY.json" "$DEST/agent-kit/artifacts/VERIFY.lock" \
+      "$DEST/agent-kit/artifacts/GATE_STATE.json"
+
 # PROJECT_PROFILE.md в этом репозитории описывает САМ набор. Если раздать его как есть,
 # каждый новый проект получит профиль с чужими фактами — поэтому в мастер-копию всегда
 # кладётся пустой шаблон.

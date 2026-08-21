@@ -25,3 +25,8 @@ node_modules/
 # Реестр установленных файлов — генерируется в каждом проекте под /cckit_uninstall,
 # не часть исходников набора.
 .claude/.cckit-manifest.json
+# Результат прогона проверок, подтверждение блока команд и состояние Stop-гейта:
+# принадлежат конкретной машине, а не исходникам набора.
+.claude/artifacts/VERIFY.json
+.claude/artifacts/VERIFY.lock
+.claude/artifacts/GATE_STATE.json

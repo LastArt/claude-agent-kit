@@ -26,6 +26,14 @@ foreach ($name in @('settings.local.json', 'CLAUDE.md')) {
   if (Test-Path $p) { Remove-Item -Force $p }
 }
 
+# Machine-local acceptance files: a run report, a confirmed command block and a gate state
+# belong to THIS machine only. Shipping them would start every new project with someone
+# else's "accepted" and with the output of someone else's tests.
+foreach ($name in @('artifacts\VERIFY.json', 'artifacts\VERIFY.lock', 'artifacts\GATE_STATE.json')) {
+  $p = Join-Path $kit $name
+  if (Test-Path $p) { Remove-Item -Force $p }
+}
+
 # PROJECT_PROFILE.md in this repo describes the KIT itself. Shipping it would give every
 # new project a profile full of someone else's facts, so the master copy always carries
 # the blank template instead.

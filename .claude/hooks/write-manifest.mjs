@@ -114,6 +114,13 @@ for (const page of ['.claude/map.html', '.claude/guide.html']) {
   if (!entries.some((e) => e.path === page)) entries.push({ path: page, group: 'service' });
 }
 
+// Файлы машинной приёмки рождаются после первого прогона, то есть почти всегда позже реестра.
+// Заявляем их заранее по той же причине, что и страницы выше: иначе они переживут
+// /cckit_uninstall и не дадут снять папку .claude/.
+for (const f of ['.claude/artifacts/VERIFY.json', '.claude/artifacts/VERIFY.lock', '.claude/artifacts/GATE_STATE.json']) {
+  if (!entries.some((e) => e.path === f)) entries.push({ path: f, group: 'service' });
+}
+
 // Сам манифест — служебный, уезжает вместе с китом.
 entries.push({ path: '.claude/.cckit-manifest.json', group: 'service' });
 

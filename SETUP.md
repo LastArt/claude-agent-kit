@@ -30,6 +30,8 @@ claude-agent-kit/
     │                        check-syntax.mjs — проверка после правки файла
     │                        write-manifest.mjs — реестр установленных файлов
     │                        update.mjs / uninstall.mjs — обновление и удаление набора
+    │                        verify.mjs — прогон проверок проекта, пишет artifacts/VERIFY.json
+    │                        gate.mjs — Stop-гейт: не даёт закончить ход с красными проверками
     │                        make-guide.mjs, git-status.mjs, stats.mjs
     ├── agents/              девять субагентов
     └── artifacts/           PLAN.md, REVIEW.md, FAQ_TEMPLATE.md
