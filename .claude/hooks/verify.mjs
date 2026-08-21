@@ -80,6 +80,8 @@ const NO_PROBE = new Set(['node', 'cd', 'echo', 'set', 'export', 'call', 'source
 try {
   if (process.argv.includes('--hash')) modeHash();
   else if (process.argv.includes('--list')) modeList();
+  else if (process.argv.includes('--enable')) modeToggle(true);
+  else if (process.argv.includes('--disable')) modeToggle(false);
   else if (process.argv.includes('--init')) modeInit();
   else if (process.argv.includes('--show')) modeShow();
   else if (process.argv.includes('--accept')) {
@@ -136,7 +138,12 @@ function parseBlock(text) {
   let inChecks = false;
   let cur = null;
 
+  // Номер строки в файле нужен переключателю --enable/--disable: он правит ровно тот элемент,
+  // который назвал человек, и не трогает остальной текст профиля.
+  let bodyIndex = -1;
   for (const raw of body) {
+    bodyIndex++;
+    const fileLine = opens[0] + 1 + bodyIndex;
     const line = raw.replace(/\s+$/, '');
     const t = line.trim();
     if (!t) continue;
@@ -160,13 +167,13 @@ function parseBlock(text) {
     let m = t.match(/^-\s*name:\s*(.+)$/);
     if (m) {
       if (cur) pushCheck(checks, cur, warnings);
-      cur = { name: unquote(m[1]), cmd: null, timeout: null };
+      cur = { name: unquote(m[1]), cmd: null, timeout: null, enabled: true, line: fileLine };
       continue;
     }
     m = t.match(/^-\s*cmd:\s*(.+)$/);
     if (m) {
       if (cur) pushCheck(checks, cur, warnings);
-      cur = { name: null, cmd: unquote(m[1]), timeout: null };
+      cur = { name: null, cmd: unquote(m[1]), timeout: null, enabled: true, line: fileLine };
       continue;
     }
     if (!cur) { warnings.push(`строка без элемента списка пропущена: ${t}`); continue; }
@@ -182,6 +189,17 @@ function parseBlock(text) {
     }
     m = t.match(/^name:\s*(.+)$/);
     if (m) { cur.name = unquote(m[1]); continue; }
+    // Выключатель проверки. Умолчание — ВКЛЮЧЕНА: у тех, кто настроил приёмку до появления
+    // этого поля, блоки без `enabled`, и они не должны молча перестать работать. А вот агент,
+    // предлагающий проверки, обязан писать `enabled: false` явно: включает только человек.
+    m = t.match(/^enabled:\s*(.+)$/);
+    if (m) {
+      const v = unquote(m[1]).toLowerCase();
+      if (v === 'false' || v === 'no' || v === '0') cur.enabled = false;
+      else if (v === 'true' || v === 'yes' || v === '1') cur.enabled = true;
+      else warnings.push(`enabled не да/нет: ${t}`);
+      continue;
+    }
     warnings.push(`непонятная строка пропущена: ${t}`);
   }
   if (cur) pushCheck(checks, cur, warnings);
@@ -219,7 +237,10 @@ function canonical(block) {
     checks: block.checks.map((c) => ({
       name: String(c.name),
       cmd: String(c.cmd),
-      timeout: c.timeout === null || c.timeout === undefined ? null : Number(c.timeout)
+      timeout: c.timeout === null || c.timeout === undefined ? null : Number(c.timeout),
+      // enabled входит в хеш намеренно: включение проверки меняет то, что будет выполняться,
+      // а значит требует нового «да» от человека — ровно как правка самой команды.
+      enabled: c.enabled !== false
     }))
   };
   const json = JSON.stringify(obj);
@@ -270,8 +291,56 @@ function modeList() {
     accepted: st.accepted,
     hash: st.canon ? st.canon.hash : null,
     timeout: st.block.timeout || null,
-    checks: st.block.checks.map((c) => ({ name: c.name, cmd: c.cmd, timeout: c.timeout || null }))
+    checks: st.block.checks.map((c) => ({
+      name: c.name, cmd: c.cmd, timeout: c.timeout || null, enabled: c.enabled !== false
+    }))
   }));
+  process.exit(0);
+}
+
+/**
+ * Включить или выключить проверку по номеру. Правит ровно одну строку в профиле и не трогает
+ * остальной текст: агент предлагает проверки выключенными, а решение «этому запускаться»
+ * принимает человек — через меню приёмки, а не правкой YAML руками.
+ *
+ * Включение меняет набор исполняемого, поэтому подтверждение сбрасывается: дальше нужен `--accept`.
+ */
+function modeToggle(on) {
+  const flag = on ? '--enable' : '--disable';
+  const num = Number(process.argv[process.argv.indexOf(flag) + 1]);
+  const st = load();
+  if (st.fatal) { say(st.fatal); process.exit(3); }
+  if (st.empty) { say(st.empty); process.exit(3); }
+
+  const checks = st.block.checks;
+  if (!Number.isInteger(num) || num < 1 || num > checks.length) {
+    say(`нужен номер проверки от 1 до ${checks.length}, а пришло: ${process.argv[process.argv.indexOf(flag) + 1] || '(ничего)'}`);
+    process.exit(3);
+  }
+  const c = checks[num - 1];
+  if ((c.enabled !== false) === on) {
+    say(`«${c.name}» и так ${on ? 'включена' : 'выключена'} — ничего не меняю`);
+    process.exit(0);
+  }
+
+  const lines = st.block.lines.slice();
+  const next = checks[num] ? checks[num].line : st.block.close;
+  let at = -1;
+  for (let k = c.line; k < next; k++) {
+    if (/^\s*enabled:/.test(lines[k])) { at = k; break; }
+  }
+  const base = (lines[c.line].match(/^(\s*)/) || [, '  '])[1];
+  const text = `${base}  enabled: ${on ? 'true' : 'false'}`;
+  if (at >= 0) lines[at] = text;
+  else lines.splice(c.line + 1, 0, text);
+
+  try { writeFileSync(PROFILE, lines.join(st.block.eol), 'utf8'); }
+  catch (e) { say(`не удалось записать профиль: ${e.message}`); process.exit(3); }
+
+  say(`${on ? '✓ включена' : '× выключена'}: ${c.name}`);
+  if (on) {
+    say('набор проверок изменился — подтвердите его заново, иначе выполняться он не будет');
+  }
   process.exit(0);
 }
 
@@ -467,10 +536,21 @@ function modeRun() {
     say(`нет проверки с именем «${only}». Есть: ${st.block.checks.map((c) => c.name).join(', ') || '—'}`);
     process.exit(3);
   }
-  const list = only ? st.block.checks.filter((c) => c.name === only) : st.block.checks;
+  // Выключенные проверки не выполняются вовсе: их предложил агент, а включает человек.
+  // Считаем их отдельно — молча пропасть они не должны, иначе «настроено 6, прогнали 2»
+  // выглядело бы поломкой.
+  const active = st.block.checks.filter((c) => c.enabled !== false);
+  const offCount = st.block.checks.length - active.length;
+  const list = only ? active.filter((c) => c.name === only) : active;
 
   printPlan(st, list);
-  if (list.length === 0) { say('в блоке нет ни одной проверки — прогонять нечего'); process.exit(3); }
+  if (offCount) say(`выключено человеком (не запускаю): ${offCount}`);
+  if (list.length === 0) {
+    say(offCount
+      ? 'все проверки в блоке выключены — включить их можно в меню приёмки (.claude/gate.bat / gate.sh)'
+      : 'в блоке нет ни одной проверки — прогонять нечего');
+    process.exit(3);
+  }
 
   if (!st.accepted) {
     say('блок проверок не подтверждён — команды не выполнены');

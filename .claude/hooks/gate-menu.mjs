@@ -50,10 +50,16 @@ function showList() {
   console.log('  на первой упавшей — поэтому быстрые стоит ставить первыми.');
   console.log('');
   j.checks.forEach((c, i) => {
-    console.log('   ' + (i + 1) + '. ' + c.name);
-    console.log('      запустит:  ' + c.cmd);
-    if (c.timeout) console.log('      ждать до:  ' + c.timeout + ' с');
+    console.log('   ' + (c.enabled ? '[вкл]' : '[выкл]') + ' ' + (i + 1) + '. ' + c.name);
+    console.log('         запустит:  ' + c.cmd);
+    if (c.timeout) console.log('         ждать до:  ' + c.timeout + ' с');
   });
+  const off = j.checks.filter((c) => !c.enabled).length;
+  if (off) {
+    console.log('');
+    console.log('  Выключенных: ' + off + '. Их предложил помощник, но запускать их или нет —');
+    console.log('  решаете вы: включить можно пунктом 8.');
+  }
   console.log('');
   console.log(j.accepted
     ? '  Список подтверждён — эти команды разрешено выполнять.'
@@ -96,6 +102,38 @@ function runChecks() {
     console.log('    Это и есть та ситуация, в которой помощника не выпустят с работы.');
   } else {
     console.log('  Проверить не удалось: список пуст, не подтверждён или повреждён (см. выше).');
+  }
+}
+
+/**
+ * Включение и выключение проверки. Помощник, разбирая проект, предлагает проверки
+ * выключенными — решение «этому запускаться у меня на машине» принимает человек, и вот здесь.
+ */
+async function toggleCheck(rl) {
+  const j = listChecks();
+  if (!j || j.checks.length === 0) {
+    console.log('  Список пуст — включать нечего. Попросите помощника подобрать проверки');
+    console.log('  под ваш проект: он видит, чем проект собирается и чем тестируется.');
+    return;
+  }
+  j.checks.forEach((c, i) => {
+    console.log('   ' + (c.enabled ? '[вкл] ' : '[выкл]') + ' ' + (i + 1) + '. ' + c.name + '  —  ' + c.cmd);
+  });
+  console.log('');
+  const raw = (await rl.question('  Номер проверки (Enter — назад): ')).trim();
+  if (!raw) return;
+  const num = Number(raw);
+  if (!Number.isInteger(num) || num < 1 || num > j.checks.length) {
+    console.log('  Нет такого номера.');
+    return;
+  }
+  const c = j.checks[num - 1];
+  console.log('');
+  run(VERIFY, [c.enabled ? '--disable' : '--enable', String(num)]);
+  if (!c.enabled) {
+    console.log('');
+    console.log('  Проверка включена, но пока не подтверждена — это разные вещи.');
+    console.log('  Подтвердите список (пункт 2), иначе выполняться он не будет.');
   }
 }
 
@@ -142,6 +180,7 @@ function header() {
   console.log('  5  Выключить слежение');
   console.log('  6  Открыть файл со списком в редакторе');
   console.log('  7  Что это вообще такое (коротко)');
+  console.log('  8  Включить или выключить проверку из списка');
   console.log('  0  Выход');
   console.log('');
 }
@@ -195,6 +234,7 @@ async function main() {
       run(GATE, ['--arm', task || 'задача без названия']);
     } else if (answer === '5') run(GATE, ['--disarm']);
     else if (answer === '6') openProfile();
+    else if (answer === '8') await toggleCheck(rl);
     else if (answer === '7') about();
     else console.log('  Не понял. Введите цифру из списка.');
     console.log('');
