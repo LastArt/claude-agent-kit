@@ -32,6 +32,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -93,6 +94,29 @@ function writeState(state) {
 
 // --- режимы -----------------------------------------------------------------
 
+/**
+ * Хеш самого инструмента приёмки: `verify.mjs`, `gate.mjs` и исходный текст блока проверок.
+ *
+ * Зачем. Отпечаток свежести считается по git, а в проекте пользователя весь `.claude/`
+ * игнорируется — значит правку хуков он не замечает. Подделывать `VERIFY.json` не нужно:
+ * достаточно переписать измеритель так, чтобы он всегда возвращал «прошло».
+ *
+ * ⚠️ Это **видимость, а не защита**. Расхождение отмечается в состоянии и печатается, но хода
+ * не останавливает: правка хуков — законное занятие (в самом наборе они и есть прод-код),
+ * и превращать её в блокировку значило бы мешать работе. К тому же за пределы конвейера хеш
+ * не достаёт: команды блока вызывают чужой код (`npm test` и прочее), и подмена тестов
+ * приёмку отбелит, не тронув ни одного из трёх хешируемых кусков.
+ */
+function toolsHash(blockText) {
+  const parts = [];
+  for (const name of ['verify.mjs', 'gate.mjs']) {
+    try { parts.push(readFileSync(path.join(KIT_DIR, 'hooks', name))); }
+    catch { parts.push(Buffer.from(`нет:${name}`)); }
+  }
+  parts.push(Buffer.from(String(blockText || ''), 'utf8'));
+  return createHash('sha256').update(Buffer.concat(parts)).digest('hex');
+}
+
 function modeArm() {
   const i = process.argv.indexOf('--arm');
   const raw = process.argv.slice(i + 1).filter((a) => !a.startsWith('--')).join(' ');
@@ -107,7 +131,10 @@ function modeArm() {
     verify: 'none',
     // Хеш набора проверок на момент взвода. null — блок ещё не подтверждён или проверок нет;
     // такой гейт «усыновит» хеш после первого настоящего прогона.
-    checks_hash: info && info.accepted ? info.hash : null
+    checks_hash: info && info.accepted ? info.hash : null,
+    // Хеш самого инструмента приёмки. Третьей частью берём канонический хеш блока, а не сырой
+    // текст: разница в отступах и комментариях на исполнение не влияет и уже покрыта checks_hash.
+    tools_hash: toolsHash(info ? info.hash : '')
   };
   writeState(state);
   say(`гейт взведён на задачу «${task}»`);
@@ -130,6 +157,8 @@ function modeStatus() {
   say(`статус: ${st.status} · попыток: ${st.attempts} · приёмка: ${st.verify}`);
   say(`взведён: ${st.armed_at}${st.updated_at ? ` · обновлён: ${st.updated_at}` : ''}`);
   say(`набор проверок: ${st.checks_hash ? `${String(st.checks_hash).slice(0, 12)}…` : 'не запомнен'}`);
+  say(`инструмент приёмки: ${st.tools_hash ? `${String(st.tools_hash).slice(0, 12)}…` : 'не запомнен'}`
+    + (st.tools_changed ? ' · ⚠ менялся после взвода' : ''));
   if (stale(st)) say(`⚠ взвод старше ${STALE_HOURS} ч — следующий ход его снимет`);
   process.exit(0);
 }
@@ -221,6 +250,17 @@ function decide() {
     process.exit(0);
   }
 
+  // 5.1 Сверка самого инструмента приёмки. В отличие от пункта 5 это НЕ блокировка и не повод
+  // остановить работу: правка хуков законна, а в самом наборе она и есть основная работа.
+  // Смысл только в том, чтобы подмена измерителя не прошла молча — отметка остаётся в состоянии
+  // и печатается человеку. Защитой это не является, см. комментарий к toolsHash().
+  const toolsNow = toolsHash(info ? info.hash : '');
+  const toolsMoved = st.tools_hash && st.tools_hash !== toolsNow;
+  if (toolsMoved) {
+    say('⚠ инструмент приёмки изменился после взвода гейта (verify.mjs / gate.mjs или блок проверок).');
+    say('  Это отметка, а не блокировка: если правка ваша — всё в порядке, если нет — посмотрите diff.');
+  }
+
   // 6. Прогон.
   if (DRY) {
     dryRun(st, info);
@@ -244,7 +284,11 @@ function decide() {
   // Хеш «усыновляется» только после СОСТОЯВШЕГОСЯ прогона (коды 0/1) и только если блок
   // подтверждён. Иначе гейт запомнил бы хеш ещё не подтверждённого блока и на следующем же
   // ходе обвинил задачу в подмене проверок, которой не было.
-  const next = { ...st, checks_hash: info && info.accepted ? info.hash : st.checks_hash };
+  const next = {
+    ...st,
+    checks_hash: info && info.accepted ? info.hash : st.checks_hash,
+    tools_changed: !!toolsMoved   // отметка живёт в состоянии, а не только в выводе одного хода
+  };
 
   // 6.1 Проверять нечего или блок не подтверждён — попытка не засчитывается.
   if (r.status === 3) {
