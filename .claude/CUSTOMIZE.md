@@ -23,7 +23,8 @@
 | Разрешить/запретить команду или путь | `.claude/settings.json` → `allow` / `deny` | добавить правило |
 | Задать команды и пути проекта | `.claude/PROJECT_PROFILE.md` | заполнить поля |
 | Задать проверки, которые гоняет гейт | `.claude/PROJECT_PROFILE.md` → §2, блок `CCKIT:VERIFY` | вписать пары `name` / `cmd` |
-| Подтвердить блок проверок | терминал | `node .claude/hooks/verify.mjs --accept` |
+| Посмотреть команды блока | где угодно | `node .claude/hooks/verify.mjs --show` |
+| Подтвердить блок проверок | **только терминал** | `node .claude/hooks/verify.mjs --accept` |
 | Временно отключить гейт | терминал | `node .claude/hooks/gate.mjs --disarm` или `CCKIT_GATE=off` |
 
 ## Модели помощников
@@ -107,6 +108,7 @@ checks:
 ```
 
 - создать пустой блок в готовом профиле — `node .claude/hooks/verify.mjs --init`;
+- посмотреть команды и хеш, ничего не подтверждая, — `node .claude/hooks/verify.mjs --show`;
 - посмотреть, что будет запущено, — `node .claude/hooks/verify.mjs --dry`;
 - что настроено и доступно на этой машине — `node .claude/hooks/verify.mjs --selftest`;
 - прогнать — `node .claude/hooks/verify.mjs` (результат ложится в `.claude/artifacts/VERIFY.json`);

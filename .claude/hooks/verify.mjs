@@ -39,7 +39,9 @@
  *   node .claude/hooks/verify.mjs --dry           показать, что будет запущено
  *   node .claude/hooks/verify.mjs --selftest      что настроено, доступно и подтверждено
  *   node .claude/hooks/verify.mjs --fresh         свежая ли последняя приёмка
- *   node .claude/hooks/verify.mjs --accept        подтвердить набор команд (действие человека)
+ *   node .claude/hooks/verify.mjs --show          показать команды и хеш, ничего не записывая
+ *   node .claude/hooks/verify.mjs --accept        подтвердить набор команд — ТОЛЬКО из терминала:
+ *                                                 спрашивает «да» с клавиатуры, без TTY отказывает
  *   node .claude/hooks/verify.mjs --init          вставить пустой блок в §2 профиля
  *   node .claude/hooks/verify.mjs --hash          служебный: {hash, accepted, count} одной строкой
  */
@@ -78,7 +80,11 @@ const NO_PROBE = new Set(['node', 'cd', 'echo', 'set', 'export', 'call', 'source
 try {
   if (process.argv.includes('--hash')) modeHash();
   else if (process.argv.includes('--init')) modeInit();
-  else if (process.argv.includes('--accept')) modeAccept();
+  else if (process.argv.includes('--show')) modeShow();
+  else if (process.argv.includes('--accept')) {
+    // единственный асинхронный режим: ждёт ответа человека с клавиатуры
+    modeAccept().catch((e) => { say(`внутренняя ошибка: ${e && e.message ? e.message : e}`); process.exit(3); });
+  }
   else if (process.argv.includes('--fresh')) modeFresh();
   else if (process.argv.includes('--selftest')) modeSelftest();
   else if (process.argv.includes('--dry')) modeDry();
@@ -269,7 +275,26 @@ function modeDry() {
   process.exit(0);
 }
 
-function modeAccept() {
+// Показать, что предлагается исполнять, НИЧЕГО не записывая. Отдельный режим нужен потому,
+// что смотреть и принимать — разные действия: раньше единственным способом увидеть команды
+// был `--accept`, то есть чтобы прочитать, приходилось согласиться.
+function modeShow() {
+  const st = load();
+  if (st.fatal) { say(st.fatal); process.exit(3); }
+  if (st.empty) { say(st.empty); process.exit(3); }
+  if (st.block.checks.length === 0) {
+    say('в блоке нет команд — показывать нечего');
+    process.exit(0);
+  }
+  printPlan(st);
+  say(`hash: ${st.canon.hash}`);
+  say(st.accepted
+    ? 'подтверждение: есть — этот набор уже принят'
+    : 'подтверждение: нет. Принять может только человек из терминала: --accept');
+  process.exit(0);
+}
+
+async function modeAccept() {
   const st = load();
   if (st.fatal) { say(st.fatal); process.exit(3); }
   if (st.empty) { say(st.empty); process.exit(3); }
@@ -279,9 +304,31 @@ function modeAccept() {
   }
   // Команды печатаются ДО записи подтверждения: подтверждать не глядя нечего.
   printPlan(st);
+
+  // Без терминала приёма нет — и это не придирка. Печать команд имеет смысл ровно тогда,
+  // когда у человека есть возможность ответить «нет»; если ответить некому, печать
+  // превращается в декорацию, а подтверждение — в формальность, которую выполнит кто угодно.
+  // Права («нет в allow» = «спросить») закрывают этот путь слабее: человек подтверждает строку
+  // запуска, а не пять команд внутри блока — их он увидит уже после согласия.
   if (!process.stdin.isTTY) {
-    say('⚠️ подтверждение выполнено не из терминала — убедитесь, что команды прочитал человек');
+    say('принять набор команд можно только с клавиатуры: нет терминала — нет подтверждения.');
+    say(`посмотреть, что предлагается, можно без записи: node ${rel(path.join(KIT_DIR, 'hooks', 'verify.mjs'))} --show`);
+    process.exit(3);
   }
+
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let answer = '';
+  try {
+    answer = (await rl.question(`${TAG} принять этот набор команд? введите «да»: `)).trim().toLowerCase();
+  } finally {
+    rl.close();
+  }
+  if (answer !== 'да' && answer !== 'yes' && answer !== 'y') {
+    say(`не принято (введено: «${answer || 'пусто'}») — ${rel(LOCK)} не тронут`);
+    process.exit(3);
+  }
+
   writeSecure(LOCK, {
     hash: st.canon.hash,
     accepted_at: new Date().toISOString(),
