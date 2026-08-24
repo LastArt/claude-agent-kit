@@ -6,7 +6,7 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0.."
 
-where node >/dev/null 2>nul
+where node >nul 2>nul
 if errorlevel 1 (
   echo Node.js not found. Install it from https://nodejs.org and run this file again.
   pause
