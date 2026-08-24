@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fingerprint } from './kit-fingerprint.mjs';
 
 const KIT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'); // .../.claude
 const PROJECT_ROOT = path.resolve(KIT_DIR, '..');
@@ -132,9 +133,15 @@ try { version = (readFileSync(path.join(KIT_DIR, 'VERSION'), 'utf8').split('\n')
 let created = '';
 try { created = new Date().toISOString().slice(0, 10); } catch { /* без даты */ }
 
+const fp = fingerprint(KIT_DIR);
+
 const manifest = {
   kit: 'claude-agent-kit',
   version,
+  // Отпечаток состава: по нему видно, что «одинаковая версия» — действительно один и тот же
+  // набор файлов. Номер поднимают не на каждую правку, и этого хватает, чтобы мастер-копия
+  // и проект разошлись при совпадающих числах — ровно та болезнь, которую он и лечит.
+  fingerprint: fp,
   created,
   root: '.claude',
   note: 'Реестр файлов, которые Claude Agent Kit создал в этом проекте. По нему /cckit_uninstall '
@@ -145,7 +152,7 @@ const manifest = {
 try {
   writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
   const hashed = entries.filter((e) => e.hash).length;
-  process.stdout.write(`Манифест обновлён: ${entries.length} записей (${hashed} с контролем целостности), версия ${version}.\n`);
+  process.stdout.write(`Манифест обновлён: ${entries.length} записей (${hashed} с контролем целостности), версия ${version}${fp ? ' · ' + fp : ''}.\n`);
 } catch (err) {
   process.stdout.write(`Не удалось записать манифест: ${err.message}. Деинсталляция по реестру будет недоступна.\n`);
 }

@@ -25,6 +25,7 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fingerprint } from './kit-fingerprint.mjs';
 
 const KIT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'); // .claude проекта
 const PROJECT_ROOT = path.resolve(KIT_DIR, '..');
@@ -128,7 +129,17 @@ const mv = firstLine(path.join(MASTER, 'VERSION')) || '—';
 
 out('Claude Agent Kit — обновление механизма в проекте');
 out(`Проект: ${PROJECT_ROOT}`);
-out(`Версия: в проекте ${pv} -> в мастере ${mv}`);
+// Рядом с номером — отпечаток состава. Именно он отвечает на вопрос «версии совпадают,
+// а файлы разные?»: одинаковые числа при разных отпечатках означают, что в мастер уехали
+// правки без подъёма версии.
+const pf = fingerprint(KIT_DIR);
+const mf = fingerprint(MASTER);
+const stamp = (v, f) => v + (f ? ' · ' + f : '');
+out(`Версия: в проекте ${stamp(pv, pf)} -> в мастере ${stamp(mv, mf)}`);
+if (pv === mv && pf && mf && pf !== mf) {
+  out('Номера версий совпадают, а отпечатки разные — значит в мастер-копию уехали правки,');
+  out('за которыми номер не подняли. Обновление ниже приведёт проект к тому, что в мастере.');
+}
 if (!manifestHashes) out('Манифеста в проекте нет — расхождения не с чем сверить, спорные файлы попадут в «ваши правки» (безопасно).');
 out('');
 

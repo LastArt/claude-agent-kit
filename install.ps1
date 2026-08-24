@@ -23,7 +23,7 @@ $kit = Join-Path $dest 'agent-kit'
 if (Test-Path $kit) { Remove-Item -Recurse -Force $kit }
 New-Item -ItemType Directory -Force -Path $kit | Out-Null
 
-$shipList = Join-Path $src 'ship.list'
+$shipList = Join-Path $src '.claude\ship.list'
 if (-not (Test-Path $shipList)) {
   Write-Host "  ! no ship.list next to the installer - nothing tells me what to copy. Aborting." -ForegroundColor Red
   exit 1

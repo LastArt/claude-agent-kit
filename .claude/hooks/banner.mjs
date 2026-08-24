@@ -68,13 +68,24 @@ function logoForTerminal() {
 }
 
 const version = read(path.join(KIT_DIR, 'VERSION')).trim() || 'не указана';
+
+// Отпечаток набора рядом с номером: версию поднимают не на каждую правку, и без него
+// «1.8.0» в двух местах может означать разные наборы файлов. Считается по ship.list;
+// нет списка — просто не показываем, баннер из-за этого не ломается.
+let stamp = '';
+try {
+  const { fingerprint } = await import('./kit-fingerprint.mjs');
+  const fp = fingerprint(KIT_DIR);
+  if (fp) stamp = ' · ' + fp;
+} catch { /* модуль не доехал — покажем одну версию */ }
+const versionStamped = version + stamp;
 const agents = countMd(path.join(KIT_DIR, 'agents'));
 const commands = countMd(path.join(KIT_DIR, 'commands'));
 const profileFilled = read(path.join(KIT_DIR, 'PROJECT_PROFILE.md')).includes('🟢');
 
 if (process.argv.includes('--compact')) {
   const profile = profileFilled ? 'профиль заполнен' : 'профиль НЕ заполнен → /cckit_research';
-  process.stdout.write(`⬢ Claude Agent Kit ${version} · агентов: ${agents} · команд: ${commands} · ${profile}\n`);
+  process.stdout.write(`⬢ Claude Agent Kit ${versionStamped} · агентов: ${agents} · команд: ${commands} · ${profile}\n`);
   process.exit(0);
 }
 
@@ -103,14 +114,14 @@ if (process.argv.includes('--welcome')) {
 
 if (process.argv.includes('--mini')) {
   // Компактная шапка для вставки в ответ команды: логотип + версия + черта. Без повторов.
-  process.stdout.write(`${fence(LOGO)}\n${LOGO}\n${fence(LOGO)}\n\n**Claude Agent Kit** · версия ${version}\n\n---\n`);
+  process.stdout.write(`${fence(LOGO)}\n${LOGO}\n${fence(LOGO)}\n\n**Claude Agent Kit** · версия ${versionStamped}\n\n---\n`);
   process.exit(0);
 }
 
 // Название подписывается внутри logoForTerminal() — только к монограмме.
 // В полном логотипе оно уже нарисовано, второй раз писать не нужно.
 process.stdout.write('\n' + logoForTerminal() + '\n');
-process.stdout.write(`\n        версия ${version}\n\n`);
+process.stdout.write(`\n        версия ${versionStamped}\n\n`);
 process.stdout.write('  Агент Кит установлен. Откройте VS Code (или полностью перезапустите, если он уже открыт) — команды читаются при старте.\n\n');
 process.stdout.write('  Дальше — что делать, если у вас:\n\n');
 process.stdout.write('  а) УЖЕ есть проект:\n');

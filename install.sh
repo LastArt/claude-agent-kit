@@ -20,7 +20,7 @@ mkdir -p "$DEST"
 rm -rf "$DEST/agent-kit"
 mkdir -p "$DEST/agent-kit"
 
-SHIP="$SRC/ship.list"
+SHIP="$SRC/.claude/ship.list"
 if [ ! -f "$SHIP" ]; then
   echo "  ! рядом с установщиком нет ship.list — не знаю, что копировать. Прерываю."
   exit 1
