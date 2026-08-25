@@ -28,10 +28,20 @@
       "Bash(node .claude/hooks/gate.mjs --status)",
       "Bash(node .claude/hooks/gate.mjs --dry)",
       "Bash(node .claude/hooks/gate.mjs --selftest)",
-      "Bash(node .claude/hooks/gate.mjs --arm:*)",
-      "Bash(node .claude/hooks/gate.mjs --arm *)",
+      "Bash(node .claude/hooks/gate.mjs --arm)",
       "Edit(.claude/artifacts/**)",
-      "Write(.claude/artifacts/**)"
+      "Write(.claude/artifacts/**)",
+	  "Bash(node .claude/hooks/task.mjs list)",
+	  "Bash(node .claude/hooks/task.mjs path)",
+	  "Bash(node .claude/hooks/task.mjs close)",
+	  "Bash(node .claude/hooks/task.mjs status exploring)",
+	  "Bash(node .claude/hooks/task.mjs status planning)",
+	  "Bash(node .claude/hooks/task.mjs status awaiting_approval)",
+	  "Bash(node .claude/hooks/task.mjs status implementing)",
+	  "Bash(node .claude/hooks/task.mjs status reviewing)",
+	  "Bash(node .claude/hooks/task.mjs status reworking)",
+	  "Bash(node .claude/hooks/task.mjs status done)",
+	  "Bash(node .claude/hooks/task.mjs status blocked)"
     ],
     "deny": [
       "Read(.env)",
@@ -67,7 +77,11 @@
       "Write(.claude/settings.local.json)",
       "Edit(.claude/settings.local.json)",
       "Write(.claude/settings.json)",
-      "Edit(.claude/settings.json)"
+      "Edit(.claude/settings.json)",
+	  "Write(.claude/tasks/**/STATE.md)",
+	  "Edit(.claude/tasks/**/STATE.md)",
+      "Write(.claude/tasks/ACTIVE)",
+      "Edit(.claude/tasks/ACTIVE)"
     ]
   },
   "hooks": {

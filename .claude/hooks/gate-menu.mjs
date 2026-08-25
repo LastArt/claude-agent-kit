@@ -181,7 +181,7 @@ async function toggleCheck(rl) {
 }
 
 function state() {
-  const out = { checks: 0, accepted: false, armed: false, task: '', verify: 'none', status: '' };
+  const out = { checks: 0, accepted: false, armed: false, task: '', taskId: '', verify: 'none', status: '' };
   const h = quiet(VERIFY, ['--hash']);
   try {
     const j = JSON.parse(String(h.stdout || '').replace(/^\[verify\]\s*/, ''));
@@ -191,10 +191,18 @@ function state() {
   const s = quiet(GATE, ['--status']);
   const text = String(s.stdout || '');
   out.armed = !text.includes('не взведён');
-  out.task = (text.match(/задача:\s*(.+)/) || [, ''])[1].trim();
+  // Название и id приходят из STATE.md и из ACTIVE, то есть в конечном счёте от человека:
+  // перед печатью вырезаем управляющие символы, иначе чужой заголовок покрасит терминал.
+  out.task = safe((text.match(/задача:\s*(.+)/) || [, ''])[1]);
+  out.taskId = safe((text.match(/id задачи:\s*(\S+)/) || [, ''])[1]);
   out.status = (text.match(/статус:\s*(\S+)/) || [, ''])[1];
   out.verify = (text.match(/приёмка:\s*(\S+)/) || [, ''])[1];
   return out;
+}
+
+/** Управляющие символы (в том числе ANSI-escape) — пробелом; длину режем по ширине окна. */
+function safe(s) {
+  return String(s || '').replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
 function header() {
@@ -209,6 +217,7 @@ function header() {
     line('Пока вы его не подтвердите (пункт 2), проверки не выполняются.');
   } else if (st.armed) {
     line(`Сейчас: включена и следит за задачей «${st.task}».`);
+    if (st.taskId) line(`Папка задачи: .claude/tasks/${st.taskId}/`);
     line(`Проверок: ${st.checks} · последний прогон: ${st.verify || 'ещё не было'}`);
   } else {
     line(`Сейчас: список из ${st.checks} проверок подтверждён, слежение не включено.`);

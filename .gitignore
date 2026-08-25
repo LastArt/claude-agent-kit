@@ -32,6 +32,9 @@ node_modules/
 # node .claude/hooks/stubs.mjs
 .claude/artifacts/
 .claude/explores/
+# Папки задач (.claude/tasks/<id>/) — та же работа «прямо сейчас», только с идентификатором:
+# указатель ACTIVE и планы живых задач в git не хранятся по той же причине, что и всё выше.
+.claude/tasks/
 
 # Роадмап разработки набора: рабочий документ, не часть продукта.
 CCKIT_UPGRADE.md

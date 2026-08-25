@@ -58,6 +58,22 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
   Write-Host "    Install Node.js, then run: node $kit\hooks\stubs.mjs" -ForegroundColor Yellow
 }
 
+# Task folders must not live in the master copy. It is handed out to every new project, and a
+# single task run straight inside ~/.claude/agent-kit would carry someone else's PLAN, SECURITY
+# and REVIEW into all of them. The tasks/ACTIVE pointer stays - it is empty and belongs there.
+#
+# Honest note: this block duplicates the "Remove-Item -Recurse -Force $kit" above. Today the
+# master copy is wiped before copying anyway, so a planted folder would disappear without this
+# block. It exists as insurance in case installing ever stops meaning "wipe and lay out again".
+$tasksDir = Join-Path $kit 'tasks'
+if (Test-Path $tasksDir) {
+  $stray = @(Get-ChildItem -Path $tasksDir -Directory -ErrorAction SilentlyContinue)
+  if ($stray.Count -gt 0) {
+    foreach ($t in $stray) { Remove-Item -Recurse -Force $t.FullName }
+    Write-Host "  ! removed task folders from the master copy: $($stray.Count) (tasks live in projects, not in the kit)" -ForegroundColor Yellow
+  }
+}
+
 # PROJECT_PROFILE.md in this repo describes the KIT itself. Shipping it would give every
 # new project a profile full of someone else's facts, so the master copy always carries
 # the blank template instead.

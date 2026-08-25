@@ -4,8 +4,9 @@
  * Кроссплатформенно, БЕЗ внешних зависимостей: только встроенные модули `node:*`.
  *
  * Как это работает. Гейт молчит, пока его не взвели: `implementer` перед первым шагом плана
- * выполняет `gate.mjs --arm "<задача>"`, и это записывает состояние в
- * `.claude/artifacts/GATE_STATE.json`. Дальше на каждом завершении хода гейт:
+ * выполняет `gate.mjs --arm` (без аргумента — название берётся из активной задачи), и это
+ * записывает состояние в `.claude/artifacts/GATE_STATE.json`. Дальше на каждом завершении
+ * хода гейт:
  *   • сверяет набор проверок с тем, что был на момент взвода (`checks_hash`),
  *   • запускает `verify.mjs`,
  *   • на красном результате возвращает ход агенту (`exit 2`) с текстом упавшей проверки.
@@ -24,7 +25,8 @@
  *
  * Ручной запуск:
  *   node .claude/hooks/gate.mjs                    как из Stop-хука (обычно не нужно руками)
- *   node .claude/hooks/gate.mjs --arm "задача"     взвести приёмку на задачу
+ *   node .claude/hooks/gate.mjs --arm              взвести приёмку на активную задачу
+ *   node .claude/hooks/gate.mjs --arm "задача"     то же, но название задать руками (человеку)
  *   node .claude/hooks/gate.mjs --status           что сейчас в состоянии
  *   node .claude/hooks/gate.mjs --dry              посчитать решение, ничего не блокируя
  *   node .claude/hooks/gate.mjs --selftest         состояние, verify.mjs и рычаги для человека
@@ -44,6 +46,14 @@ const STATE = path.join(KIT_DIR, 'artifacts', 'GATE_STATE.json');
 const VERIFY = path.join(KIT_DIR, 'hooks', 'verify.mjs');
 const VERIFY_JSON = path.join(KIT_DIR, 'artifacts', 'VERIFY.json');
 const GIT_STATUS = path.join(KIT_DIR, 'hooks', 'git-status.mjs');
+const TASKS = path.join(KIT_DIR, 'tasks');
+const TASKS_ACTIVE = path.join(TASKS, 'ACTIVE');
+const TASK_MJS = path.join(KIT_DIR, 'hooks', 'task.mjs');
+
+// Форма идентификатора задачи — та же, что в task.mjs. `ACTIVE` правят руками и через
+// `echo >`, поэтому доверия к его содержимому ровно столько же, сколько к аргументу.
+const TASK_ID_RE = /^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]*$/;
+const TASK_ID_MAX = 80;
 
 const MAX_ATTEMPTS = 3;
 const STALE_HOURS = 6;
@@ -67,9 +77,19 @@ try {
 
 // --- состояние --------------------------------------------------------------
 //
-// ФАЗА 2 заменит ТОЛЬКО эти две функции на чтение/запись `tasks/<id>/STATE.md`.
-// Имена полей выбраны заранее такими же: task, status, attempts, armed_at, updated_at,
-// verify, checks_hash. Всё остальное в этом файле трогать не придётся.
+// Состояний ДВА, и это решение, а не недоделка. Здесь, в `artifacts/GATE_STATE.json`, живёт
+// состояние ПРИЁМКИ (task, task_id, status, attempts, armed_at, verify, checks_hash,
+// tools_hash); состояние КОНВЕЙЕРА — в `tasks/<id>/STATE.md`, и его ведёт `task.mjs`.
+//
+// Почему не одно. Проверки из блока CCKIT:VERIFY гоняются по ВСЕМУ рабочему дереву, а дерево
+// одно на все задачи — «приёмки по задаче» физически не существует, поэтому вопрос «какую
+// задачу проверять» не решается файлом ACTIVE, а отпадает. Плюс checks_hash / tools_hash —
+// машинные факты об инструменте приёмки, им нечего делать в человекочитаемом STATE.md,
+// который правят руками. И третье: GATE_STATE.json закрыт `deny` по точному пути, а STATE.md —
+// шаблоном; даже если правило с `**` где-то не сработает, подделка статуса задачи не станет
+// подделкой приёмки. Не сливать эти два состояния обратно в одно.
+//
+// Связь между ними ровно одна — поле `task_id`: по нему видно, к какой задаче относится взвод.
 
 function readState() {
   try {
@@ -120,10 +140,17 @@ function toolsHash(blockText) {
 function modeArm() {
   const i = process.argv.indexOf('--arm');
   const raw = process.argv.slice(i + 1).filter((a) => !a.startsWith('--')).join(' ');
-  const task = clean(raw) || 'задача без названия';
+  const taskId = activeTaskId();
+  // Без аргумента название берётся из активной задачи, и это основная форма: свободный текст
+  // человека больше не ездит в командной строке, а шаблон `--arm:*` убран из `allow`.
+  // Аргумент остаётся для человека — из терминала и из `gate.bat`, где слоя прав нет вовсе.
+  const task = clean(raw) || activeTaskTitle(taskId) || 'задача без названия';
   const info = hashInfo();
   const state = {
     task,
+    // К какой задаче относится взвод. Пусто — гейт взвели вручную или активной задачи нет;
+    // это нормально: приёмка считается по дереву и работает в проекте без задач.
+    task_id: taskId,
     status: 'implementing',
     attempts: 0,
     armed_at: new Date().toISOString(),
@@ -138,6 +165,7 @@ function modeArm() {
   };
   writeState(state);
   say(`гейт взведён на задачу «${task}»`);
+  if (taskId) say(`id задачи: ${taskId}`);
   if (!info || info.count === 0) say('проверок в профиле нет — приёмке нечего запускать');
   else if (!info.accepted) say('блок проверок ещё не подтверждён (`verify.mjs --accept` делает человек)');
   else say(`набор проверок запомнен: ${info.count} шт., hash ${String(info.hash).slice(0, 12)}…`);
@@ -154,6 +182,9 @@ function modeStatus() {
   const st = readState();
   if (!st) { say('гейт не взведён'); process.exit(0); }
   say(`задача: ${st.task}`);
+  // Строка намеренно НЕ начинается со слова «задача:»: меню gate-menu.mjs выдёргивает название
+  // регэкспом /задача:\s*(.+)/ и подхватило бы вместо заголовка идентификатор.
+  if (st.task_id) say(`id задачи: ${clean(st.task_id)}`);
   say(`статус: ${st.status} · попыток: ${st.attempts} · приёмка: ${st.verify}`);
   say(`взведён: ${st.armed_at}${st.updated_at ? ` · обновлён: ${st.updated_at}` : ''}`);
   say(`набор проверок: ${st.checks_hash ? `${String(st.checks_hash).slice(0, 12)}…` : 'не запомнен'}`);
@@ -241,7 +272,10 @@ function decide() {
   const info = hashInfo();
   if (st.checks_hash && info && (!info.accepted || info.hash !== st.checks_hash)) {
     const why = info.accepted ? 'команды стали другими' : 'подтверждение блока пропало';
-    if (!DRY) writeState({ ...st, status: 'blocked' });
+    if (!DRY) {
+      writeState({ ...st, status: 'blocked' });
+      noteInTask(st, `приёмка: набор проверок изменился после взвода (${why}) — blocked`);
+    }
     err(`${TAG} ⛔ набор проверок изменился после взвода гейта (${why}) — нужен человек.`);
     err(`${TAG} Приёмка на этой задаче больше не считается: гейт запомнил один набор команд, а в`);
     err(`${TAG} профиле сейчас другой. Верните блок CCKIT:VERIFY в прежний вид или подтвердите`);
@@ -319,6 +353,9 @@ function decide() {
       writeState(next);
       say(`проверки зелёные (${report ? report.total : '?'})`);
     }
+    noteInTask(next, next.verify === 'partial'
+      ? `приёмка: прошла частично${report ? ` (${report.passed} из ${report.total})` : ''}`
+      : 'приёмка: проверки зелёные');
     summary();
     process.exit(0);
   }
@@ -329,6 +366,7 @@ function decide() {
   if (next.attempts >= MAX_ATTEMPTS) {
     next.status = 'blocked';
     writeState(next);
+    noteInTask(next, `приёмка: ${MAX_ATTEMPTS} попытки не помогли — blocked`);
     say(`⛔ три попытки не помогли, нужен человек: приёмка на задаче «${st.task}» так и не стала зелёной`);
     if (report && report.failed) say(`последняя упавшая проверка: ${report.failed}`);
     say('человеку: как снять гейт — см. .claude/CUSTOMIZE.md, раздел «Машинная приёмка»');
@@ -387,7 +425,66 @@ function dryRun(st, info) {
  */
 function noAcceptance(reason, withHint) {
   say(`⚠ ход завершается без приёмки: ${reason}`);
-  if (withHint) say('взвести приёмку: node .claude/hooks/gate.mjs --arm "<задача>"');
+  if (withHint) say('взвести приёмку: node .claude/hooks/gate.mjs --arm');
+}
+
+// --- задача ------------------------------------------------------------------
+
+/**
+ * Идентификатор задачи → путь. Единственное место в этом файле, где такой путь строится:
+ * `id` приходит из обычного текстового файла `tasks/ACTIVE`, который правят руками, поэтому
+ * проверяются и форма, и длина, и то, что результат лежит внутри `tasks/`.
+ * Не разобрали — null, и никаких попыток «починить» строку.
+ */
+function taskDir(id) {
+  const s = String(id == null ? '' : id);
+  if (s.length > TASK_ID_MAX || !TASK_ID_RE.test(s)) return null;
+  const dir = path.resolve(TASKS, s);
+  return dir.startsWith(TASKS + path.sep) ? dir : null;
+}
+
+/** id активной задачи или пустая строка. Best-effort: нет файла — значит задач нет. */
+function activeTaskId() {
+  try {
+    const raw = String(readFileSync(TASKS_ACTIVE, 'utf8')).split(/\r?\n/)[0].trim();
+    return taskDir(raw) ? raw : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Заголовок задачи из её STATE.md — для `--arm` без аргумента. Не нашли — пустая строка. */
+function activeTaskTitle(id) {
+  const dir = taskDir(id);
+  if (!dir) return '';
+  try {
+    const front = readFileSync(path.join(dir, 'STATE.md'), 'utf8').match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    const title = front && front[1].match(/^title:(.*)$/m);
+    return title ? clean(title[1]) : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Строка в журнал задачи на терминальных переходах — best-effort и молча.
+ *
+ * Вызов массивом и БЕЗ `shell: true` намеренно: текст в конечном счёте приходит от человека
+ * (заголовок задачи, имя упавшей проверки), а Stop-хук не ограничен слоем прав вовсе — здесь
+ * некому спросить подтверждения. Пишем только если гейт следит за той же задачей, что сейчас
+ * активна: иначе вердикт лёг бы в чужой журнал. Любая ошибка глотается — журнал задачи
+ * не повод ломать завершение хода.
+ */
+function noteInTask(state, text) {
+  try {
+    if (DRY) return;
+    const id = state && state.task_id;
+    if (!id || id !== activeTaskId()) return;
+    if (!existsSync(TASK_MJS)) return;
+    spawnSync(process.execPath, [TASK_MJS, 'log', clean(text)], {
+      cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore'
+    });
+  } catch { /* молча: это заметка, а не приёмка */ }
 }
 
 // --- вспомогательное --------------------------------------------------------
