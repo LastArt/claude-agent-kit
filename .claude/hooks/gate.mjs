@@ -49,6 +49,7 @@ const GIT_STATUS = path.join(KIT_DIR, 'hooks', 'git-status.mjs');
 const TASKS = path.join(KIT_DIR, 'tasks');
 const TASKS_ACTIVE = path.join(TASKS, 'ACTIVE');
 const TASK_MJS = path.join(KIT_DIR, 'hooks', 'task.mjs');
+const EVENTS_MJS = path.join(KIT_DIR, 'hooks', 'events.mjs');
 
 // Форма идентификатора задачи — та же, что в task.mjs. `ACTIVE` правят руками и через
 // `echo >`, поэтому доверия к его содержимому ровно столько же, сколько к аргументу.
@@ -238,6 +239,7 @@ function decide() {
   // забытый `verified` или `blocked` иначе глушил бы и приёмку, и строку о её отсутствии.
   if (st && stale(st)) {
     if (!DRY) { try { rmSync(STATE); } catch { /* уже нет — и хорошо */ } }
+    emitGate(st, { status: 'stale', hours: STALE_HOURS });
     noAcceptance(`взвод протух (старше ${STALE_HOURS} ч)`, false);
     summary();
     process.exit(0);
@@ -275,6 +277,7 @@ function decide() {
     if (!DRY) {
       writeState({ ...st, status: 'blocked' });
       noteInTask(st, `приёмка: набор проверок изменился после взвода (${why}) — blocked`);
+      emitGate(st, { status: 'blocked', reason: 'checks-changed' });
     }
     err(`${TAG} ⛔ набор проверок изменился после взвода гейта (${why}) — нужен человек.`);
     err(`${TAG} Приёмка на этой задаче больше не считается: гейт запомнил один набор команд, а в`);
@@ -327,6 +330,9 @@ function decide() {
   // 6.1 Проверять нечего или блок не подтверждён — попытка не засчитывается.
   if (r.status === 3) {
     writeState({ ...st, verify: 'none' });   // прогона не было — checks_hash не трогаем
+    // Пишем и этот случай: молчаливый пропуск неотличим от «гейта не было», а главный вопрос
+    // к журналу — какая доля ходов вообще проверялась.
+    emitGate(st, { status: 'none', reason: (!info || info.count === 0) ? 'no-checks' : 'not-accepted' });
     const reason = !info || info.count === 0
       ? 'в профиле не настроено ни одной проверки'
       : 'блок проверок не подтверждён — подтвердить его может только человек (verify.mjs --accept)';
@@ -356,6 +362,7 @@ function decide() {
     noteInTask(next, next.verify === 'partial'
       ? `приёмка: прошла частично${report ? ` (${report.passed} из ${report.total})` : ''}`
       : 'приёмка: проверки зелёные');
+    emitGate(next, { status: next.verify, passed: report ? report.passed : '', total: report ? report.total : '' });
     summary();
     process.exit(0);
   }
@@ -367,6 +374,7 @@ function decide() {
     next.status = 'blocked';
     writeState(next);
     noteInTask(next, `приёмка: ${MAX_ATTEMPTS} попытки не помогли — blocked`);
+    emitGate(next, { status: 'blocked', attempt: next.attempts, failed: report && report.failed ? report.failed : '' });
     say(`⛔ три попытки не помогли, нужен человек: приёмка на задаче «${st.task}» так и не стала зелёной`);
     if (report && report.failed) say(`последняя упавшая проверка: ${report.failed}`);
     say('человеку: как снять гейт — см. .claude/CUSTOMIZE.md, раздел «Машинная приёмка»');
@@ -374,6 +382,15 @@ function decide() {
     process.exit(0);
   }
   writeState(next);
+  // Точка, которой в файле не было вовсе: промежуточная неудача приёмки не писала никуда, и
+  // след двух первых попыток исчезал вместе с ходом. Единственная из шести с СОБСТВЕННЫМ
+  // таймаутом, и вот почему: только здесь после best-effort вызова остаётся обязательное
+  // действие — `blockTurn(...)` с exit 2, единственный способ вернуть ход агенту красным.
+  // Бюджет Stop-хука (900 с в settings.json) уже расписан между `hashInfo()` (30 с) и прогоном
+  // приёмки (VERIFY_TIMEOUT_MS = 870 с), поэтому десять секунд поверх сузили бы и без того
+  // узкий запас. В пяти остальных точках дальше только `exit 0`, и потеря вызова стоит строчки
+  // в сводке, а не приёмки — там 10 с по умолчанию.
+  emitGate(next, { status: 'fail', attempt: next.attempts, failed: report && report.failed ? report.failed : '' }, 2500);
   blockTurn(report, next.attempts);
 }
 
@@ -485,6 +502,48 @@ function noteInTask(state, text) {
       cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore'
     });
   } catch { /* молча: это заметка, а не приёмка */ }
+}
+
+/**
+ * Вердикт приёмки в машинный журнал `.claude/artifacts/events.jsonl` — best-effort и молча,
+ * той же дисциплиной, что `noteInTask`.
+ *
+ * Отдельным процессом, а не импортом: статический импорт ESM нельзя обернуть в `try/catch`,
+ * и сломанный или недоехавший `events.mjs` уронил бы загрузку gate.mjs целиком — то есть
+ * выключил бы машинную приёмку ради журнала. Любой инфраструктурный сбой здесь стоит строчки
+ * в журнале, а не хода.
+ *
+ * Значения чистятся ЗДЕСЬ, до `args.push`, и причина острее, чем в task.mjs: `report.failed`
+ * и `report.checks` приходят из `VERIFY.json`, а его пишет `Bash` беспрепятственно. JSON умеет
+ * пронести нулевой байт внутри строкового значения (в файле он лежит escape-последовательностью,
+ * а после `JSON.parse` снова становится байтом), Node отвергнет такой `argv` целиком,
+ * исключение уйдёт в пустой `catch`, и событие пропадёт молча ровно в ветке промежуточной
+ * неудачи приёмки — в единственном месте, ради которого журнал и заводился.
+ *
+ * `String(v)` перед `clean` обязателен: местная `clean` написана как `String(s || '')`, и без
+ * него пара `passed: 0` («не прошло ни одной проверки») стала бы пустой строкой и выпала бы
+ * из события — а это самый интересный для журнала случай.
+ *
+ * В отличие от `noteInTask` сверки с активной задачей нет: журнал общий для проекта, а не для
+ * одной задачи, и пустой `task_id` — законное значение (гейт взводят и без задачи).
+ *
+ * Третий параметр нужен ради ОДНОЙ точки: 10 с по умолчанию годятся там, где после вызова
+ * идёт только `exit 0` и потеря стоит строчки в сводке; там, где после вызова остаётся
+ * обязательное действие, вызывающий передаёт меньше.
+ */
+function emitGate(state, payload, timeoutMs = 10000) {
+  try {
+    if (DRY) return;   // сухой прогон не пишет никуда
+    if (!existsSync(EVENTS_MJS)) return;
+    const args = [EVENTS_MJS, '--emit', 'gate_result', '--task', String((state && state.task_id) || '')];
+    for (const [k, v] of Object.entries(payload || {})) {
+      if (v === undefined || v === null) continue;   // нет значения — нет пары
+      const sv = clean(String(v));                   // String() обязателен: см. комментарий выше
+      if (!sv) continue;                             // после чистки пусто — пары нет
+      args.push('--set', `${k}=${sv}`);
+    }
+    spawnSync(process.execPath, args, { cwd: PROJECT_ROOT, timeout: timeoutMs, stdio: 'ignore' });
+  } catch { /* молча: журнал не повод ломать завершение хода */ }
 }
 
 // --- вспомогательное --------------------------------------------------------

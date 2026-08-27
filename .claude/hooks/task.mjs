@@ -43,6 +43,7 @@ const TASKS = path.join(KIT_DIR, 'tasks');
 const ACTIVE = path.join(TASKS, 'ACTIVE');
 const STUBS = path.join(KIT_DIR, 'assets', 'stubs');
 const GATE_STATE = path.join(KIT_DIR, 'artifacts', 'GATE_STATE.json');
+const EVENTS_MJS = path.join(KIT_DIR, 'hooks', 'events.mjs');
 const TAG = '[task]';
 
 // Форма идентификатора — дата и строчное латинское имя. Регэксп проверяет ФОРМУ, а не
@@ -134,6 +135,7 @@ function cmdNew(rawTitle) {
   } catch (e) {
     say(`⚠ не смог записать указатель ACTIVE: ${e.message} — задача создана, но активной не стала`);
   }
+  emit('task_opened', id, { title });
   say(`задача заведена: ${id}`);
   say(`папка: ${dir}`);
 }
@@ -147,10 +149,16 @@ function cmdStatus(list) {
   }
   const { id, dir } = requireActive();
   const file = path.join(dir, 'STATE.md');
-  const next = editFront(readOr(file, ''), { status: value, updated: stamp() });
+  // Читаем файл ОТДЕЛЬНО от правки: старое значение статуса нужно журналу событий, а
+  // `editFront` его не возвращает — переход «из чего во что» иначе терялся бы.
+  const src = readOr(file, '');
+  const fm = frontMatter(src);
+  const from = fm ? clean(fm.get('status')) : '';
+  const next = editFront(src, { status: value, updated: stamp() });
   if (!next) die(`в ${rel(file)} нет front-matter — статус записать некуда, ничего не меняю`);
   writeFileSync(file, next, 'utf8');
   journal(file, `статус → ${value}`);
+  emit('status_changed', id, { from, to: value });
   say(`${id}: статус ${value}`);
 }
 
@@ -168,10 +176,21 @@ function cmdLog(list) {
 function cmdClose() {
   const { id, dir } = requireActive();
   const file = path.join(dir, 'STATE.md');
-  const next = editFront(readOr(file, ''), { status: 'done', updated: stamp() });
+  // То же чтение, что в cmdStatus, плюс `created`: полное время жизни задачи считается
+  // только здесь и только один раз. Не разобралось (старая задача из миграции, чужой
+  // формат) — поля просто не будет, ноль вместо факта не выдумываем.
+  const src = readOr(file, '');
+  const fm = frontMatter(src);
+  const from = fm ? clean(fm.get('status')) : '';
+  const started = fm ? parseStamp(fm.get('created')) : null;
+  const next = editFront(src, { status: 'done', updated: stamp() });
   if (!next) die(`в ${rel(file)} нет front-matter — закрывать нечего, ничего не меняю`);
   writeFileSync(file, next, 'utf8');
   journal(file, 'задача закрыта');
+  emit('task_closed', id, {
+    from,
+    duration_min: started ? Math.max(0, Math.round((Date.now() - started) / 60000)) : '',
+  });
   try {
     writeFileSync(ACTIVE, '\n', 'utf8');
   } catch (e) {
@@ -372,6 +391,43 @@ function journal(file, text) {
   }
 }
 
+/**
+ * Событие в машинный журнал `.claude/artifacts/events.jsonl` — best-effort и молча.
+ *
+ * Отдельным процессом, а не импортом: статический импорт ESM нельзя обернуть в `try/catch`,
+ * и сломанный или недоехавший `events.mjs` уронил бы загрузку самого хука — то есть журнал
+ * отнял бы у человека смену статуса. Цена решения — один процесс Node на событие.
+ *
+ * Значения чистятся ЗДЕСЬ, до `args.push`, а не только внутри `events.mjs`: очистка внутри
+ * хука работает уже после границы процессов, а ломается именно граница. Node отвергает `argv`
+ * с нулевым байтом целиком — `spawnSync` бросит, пустой `catch` проглотит, и событие пропадёт
+ * молча. Тот же вызов закрывает длину: огромное значение раздувает `argv` за лимит ОС
+ * (на Windows 32 767 символов) с тем же молчаливым исходом. Очистка в `events.mjs` при этом
+ * остаётся — две линии здесь намеренны.
+ *
+ * `String(v)` перед `clean` обязателен: числа в payload бывают (`duration_min`), а версия
+ * `clean` в gate.mjs написана как `String(s || '')` и превратила бы `0` в пустую строку, то
+ * есть выбросила бы пару. Пишем одинаково в обоих файлах, чтобы разница реализаций `clean`
+ * вообще не имела значения. Ключи не чистим — это литералы в коде, за них отвечает `KEY_RE`
+ * в `events.mjs`.
+ *
+ * Ни `say`, ни `die` внутри: молчание намеренно, диагностика журнала живёт
+ * в `events.mjs --selftest`, а не в выводе каждой команды.
+ */
+function emit(event, id, payload) {
+  try {
+    if (!existsSync(EVENTS_MJS)) return;
+    const args = [EVENTS_MJS, '--emit', event, '--task', String(id || '')];
+    for (const [k, v] of Object.entries(payload || {})) {
+      if (v === undefined || v === null) continue;   // нет значения — нет пары
+      const sv = clean(String(v));                   // String() обязателен: см. комментарий выше
+      if (!sv) continue;                             // после чистки пусто — пары нет
+      args.push('--set', `${k}=${sv}`);
+    }
+    spawnSync(process.execPath, args, { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore' });
+  } catch { /* молча: журнал не повод ломать команду */ }
+}
+
 // --- вспомогательное --------------------------------------------------------
 
 function readOr(file, fallback) {
@@ -451,6 +507,20 @@ function hhmm() {
 
 function stamp() {
   return `${today()} ${hhmm()}`;
+}
+
+/**
+ * Обратное к `stamp()`: `"2026-08-27 14:40"` → миллисекунды. Разбираем сами, а не через
+ * `new Date(строка)`, потому что это НЕ ISO-формат, и разные движки понимают такую строку
+ * по-разному (где-то как локальное время, где-то как UTC, где-то не понимают вовсе).
+ * Собираем по локальным компонентам — ровно так, как её и записали. Не совпало — `null`,
+ * и вызывающий просто не пишет поле: ноль вместо факта не выдумываем.
+ */
+function parseStamp(s) {
+  const m = String(s == null ? '' : s).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return null;
+  const t = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])).getTime();
+  return Number.isFinite(t) ? t : null;
 }
 
 function rel(p) {
