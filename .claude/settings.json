@@ -74,6 +74,8 @@
       "Edit(.claude/artifacts/VERIFY.lock)",
       "Write(.claude/artifacts/GATE_STATE.json)",
       "Edit(.claude/artifacts/GATE_STATE.json)",
+	  "Write(.claude/artifacts/events.jsonl)",
+	  "Edit(.claude/artifacts/events.jsonl)",
       "Write(.claude/settings.local.json)",
       "Edit(.claude/settings.local.json)",
       "Write(.claude/settings.json)",
