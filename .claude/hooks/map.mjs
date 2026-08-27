@@ -8,9 +8,11 @@
  *   1. git log — какие файлы попадали в один коммит. Это и есть связи: модули, которые
  *      правят вместе, связаны на деле, а не на бумаге. Работает с первого дня, даже если
  *      кит поставили вчера, а репозиторию два года.
- *   2. .claude/artifacts/history/ — архив задач кита. В шапке каждой записи уже лежит строка
- *      «Затронутые файлы» (её кладёт archive-task.mjs), поэтому задача сразу знает свои модули.
- *      Отсюда второй слой связей и подсветка «что трогали в этой доработке».
+ *   2. .claude/tasks/<id>/ — задачи кита, у каждой своя папка: STATE.md (заголовок, дата,
+ *      статус), PLAN.md (из него берутся затронутые файлы), SECURITY.md и REVIEW.md.
+ *      Отсюда второй слой связей и подсветка «что трогали в этой доработке». Копии до 1.10
+ *      хранили то же самое одной записью на задачу в .claude/artifacts/history/ — этот
+ *      источник читается как legacy, с пропуском задач, уже прочитанных из tasks/.
  *   3. .claude/explores/ — сохранённые разведки модулей. Вместе с задачами они образуют
  *      третий уровень карты, «память»: облако накопленного знания о проекте, где связи —
  *      общие файлы, общий модуль и общая тема. Тексты записей вшиваются в страницу, чтобы
@@ -36,7 +38,7 @@
  * по одной истории задач; нет и её — честно скажет, что рисовать нечего.
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, lstatSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,7 +46,8 @@ import { fileURLToPath } from 'node:url';
 const KIT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PROJECT_ROOT = path.resolve(KIT_DIR, '..');
 const TEMPLATE = path.join(KIT_DIR, 'assets', 'map.template.html');
-const HISTORY = path.join(KIT_DIR, 'artifacts', 'history');
+const TASKS = path.join(KIT_DIR, 'tasks');
+const HISTORY = path.join(KIT_DIR, 'artifacts', 'history');   // память копий до 1.10
 const EXPLORES = path.join(KIT_DIR, 'explores');
 
 const argv = process.argv.slice(2);
@@ -130,8 +133,60 @@ function pickKitVisibility(commits) {
   return outside.size >= 3 ? { hideKit: true, forced: false } : { hideKit: false, forced: true };
 }
 
-// -------- история задач --------
+// -------- задачи проекта --------
+// Что считается задачей — одно правило на всех читателей `tasks/` (task.mjs, эта карта,
+// explorer и /cckit_recall):
+//
+//   папка внутри tasks/ считается задачей тогда и только тогда, когда её имя проходит
+//   ^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]*$ и внутри есть STATE.md.
+//
+// Всё остальное — включая папку без STATE.md (незавершённый перенос) и любые посторонние
+// каталоги — пропускается МОЛЧА, без предупреждений и без попыток достроить. Иначе оборванный
+// перенос приезжает на карту узлом без заголовка, даты и статуса, а посторонний каталог —
+// узлом в памяти проекта.
+const TASK_ID_RE = /^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]*$/;
+
 function readTasks() {
+  const fromTasks = readTaskDirs();
+  const known = new Set(fromTasks.map((t) => t.source));
+  // Legacy: одна запись на задачу в artifacts/history/. После миграции та же задача лежит
+  // и там, и в tasks/ — на карте она должна быть ОДНА. Имя записи архива собиралось по той же
+  // формуле `<дата>-<slug(заголовок)>`, что и имя папки, поэтому совпадение имени и есть
+  // совпадение задачи.
+  const legacy = readHistory().filter((t) => !known.has(t.source.replace(/\.md$/, '')));
+  return [...fromTasks, ...legacy];
+}
+
+function readTaskDirs() {
+  if (!existsSync(TASKS)) return [];
+  let names = [];
+  try { names = readdirSync(TASKS); } catch { return []; }
+  const tasks = [];
+  for (const name of names.sort()) {
+    if (!TASK_ID_RE.test(name)) continue;
+    const dir = path.join(TASKS, name);
+    if (!isPlainDir(dir)) continue;
+    const state = readTaskFile(dir, 'STATE.md');
+    if (state === null) continue;               // нет STATE.md — задачей не считается
+    const plan = readTaskFile(dir, 'PLAN.md') || '';
+    const security = readTaskFile(dir, 'SECURITY.md') || '';
+    const review = readTaskFile(dir, 'REVIEW.md') || '';
+    const fm = frontMatter(state);
+    tasks.push({
+      title: fm.title || name,
+      date: fm.created || name.slice(0, 10),
+      status: fm.status || '',
+      outcome: outcomeFromReview(review),
+      files: filesFromPlan(plan),
+      source: name,
+      text: joinTask(plan, security, review),
+    });
+  }
+  return tasks;
+}
+
+// Память копий до 1.10: задача целиком одной записью, файлы и итог ревью — строками шапки.
+function readHistory() {
   if (!existsSync(HISTORY)) return [];
   let names = [];
   try { names = readdirSync(HISTORY).filter((n) => n.endsWith('.md') && n !== 'INDEX.md'); }
@@ -146,9 +201,65 @@ function readTasks() {
     const filesRaw = (src.match(/\*\*Затронутые файлы:\*\*\s*(.+)$/m) || [, ''])[1].trim();
     const files = filesRaw && !/^не указаны/.test(filesRaw)
       ? filesRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
-    tasks.push({ title, date, outcome, files, source: name, text: src });
+    tasks.push({ title, date, status: 'done', outcome, files, source: name, text: src });
   }
   return tasks;
+}
+
+/**
+ * Читаем ТОЛЬКО четыре известных имени и только обычные файлы. lstat не идёт по симлинку
+ * намеренно: `tasks/<id>/PLAN.md`, подложенный ссылкой на чужой файл, иначе вшивается прямо
+ * в map.html — а карту потом пересылают.
+ */
+function readTaskFile(dir, name) {
+  const file = path.join(dir, name);
+  try {
+    if (!lstatSync(file).isFile()) return null;
+    return readFileSync(file, 'utf8');
+  } catch { return null; }
+}
+
+function isPlainDir(p) {
+  try { return lstatSync(p).isDirectory(); } catch { return false; }
+}
+
+function frontMatter(src) {
+  const m = String(src).match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  const fields = {};
+  if (!m) return fields;
+  for (const line of m[1].split(/\r?\n/)) {
+    const f = line.match(/^([A-Za-z_][\w-]*)\s*:(.*)$/);
+    if (f) fields[f[1]] = f[2].trim();
+  }
+  return fields;
+}
+
+/** Пути из шагов плана: строки вида «_Файл:_ `путь`». Столько же, сколько брал archive-task. */
+function filesFromPlan(src) {
+  const found = new Set();
+  for (const m of String(src).matchAll(/_Файл:_\s*`([^`]+)`/g)) found.add(m[1].trim());
+  return [...found].slice(0, 12);
+}
+
+/** Итог задачи одной строкой — та же логика, по которой его писал archive-task в шапку записи. */
+function outcomeFromReview(src) {
+  const text = String(src).trim();
+  if (!text) return 'ревью не проводилось';
+  if (/^APPROVED\s*$/m.test(text)) return 'APPROVED';
+  const counts = ['🔴', '🟡', '⚪'].map((mark) => (text.split(mark).length - 1));
+  const [crit, important] = counts;
+  if (crit || important) return `замечания: 🔴 ${crit}, 🟡 ${important}`;
+  return 'ревью проведено';
+}
+
+/** Запись для читалки: три файла задачи одним документом, как это выглядело в архиве. */
+function joinTask(plan, security, review) {
+  const parts = [String(plan).trim()];
+  const sec = String(security).trim();
+  const rev = String(review).trim();
+  if (sec) parts.push(`---\n\n## Аудит безопасности\n\n${sec}`);
+  if (rev) parts.push(`---\n\n## Ревью\n\n${rev}`);
+  return parts.filter(Boolean).join('\n\n');
 }
 
 // -------- кэш разведок как часть памяти --------
@@ -429,7 +540,8 @@ function clampDoc(text) {
   const s = stripFrontmatter(text);
   if (s.length <= DOC_LIMIT) return s;
   return s.slice(0, DOC_LIMIT) + '\n\n---\n\n_(запись длиннее ' + DOC_LIMIT
-    + ' знаков — здесь показано начало, целиком она лежит в `.claude/artifacts/history/`)_\n';
+    + ' знаков — здесь показано начало, целиком она лежит в папке своей задачи '
+    + '`.claude/tasks/<id>/`, а для копий до 1.10 — в `.claude/artifacts/history/`)_\n';
 }
 
 // -------- содержимое файлов для читалки --------
@@ -540,6 +652,7 @@ const data = {
   tasks: tasks.map((t, i) => ({
     title: t.title,
     date: t.date,
+    status: t.status,
     outcome: t.outcome,
     files: t.files,
     module: levelModule.taskIds[i],
@@ -552,7 +665,7 @@ const data = {
 if (flag('--json')) { out(JSON.stringify(data, null, 2)); process.exit(0); }
 
 if (!levelModule.nodes.length && !levelFile.nodes.length && !levelMemory.nodes.length) {
-  out('Рисовать нечего: не нашлось ни коммитов с файлами, ни задач в artifacts/history.');
+  out('Рисовать нечего: не нашлось ни коммитов с файлами, ни задач в .claude/tasks/.');
   out(HAS_GIT
     ? 'Репозиторий пуст или всё попало под фильтр — попробуй --with-kit.'
     : 'Проект вне git — карта соберётся, когда накопится история задач кита.');

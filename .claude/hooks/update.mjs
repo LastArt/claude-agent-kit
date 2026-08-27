@@ -60,6 +60,11 @@ function isLiving(rel) {
   if (mutable.has(rel)) return true;
   if (rel.startsWith('artifacts/')) return true;
   if (rel === 'explores' || rel.startsWith('explores/')) return true; // кэш разведок — наработка проекта
+  // Задачи проекта. Папок задач в мастер-копии быть не должно вовсе (ship.list их не везёт),
+  // но если они там окажутся — человек прогнал задачу прямо в ~/.claude/agent-kit, — обновление
+  // не имеет права ЗАТИРАТЬ задачи проекта: живое либо доносится там, где его нет (так проект
+  // получает указатель tasks/ACTIVE), либо не трогается вовсе.
+  if (rel === 'tasks' || rel.startsWith('tasks/')) return true;
   if (rel === 'map.html' || rel === 'guide.html') return true;         // собранные страницы, а не механизм
   return false;
 }

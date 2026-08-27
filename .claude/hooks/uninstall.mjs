@@ -8,8 +8,12 @@
  *
  * Режимы:
  *   service — снять только механизм кита (агенты, хуки, команды, промт, настройки).
- *             Память (архив прошлых задач в artifacts/history) ОСТАЁТСЯ — вернётесь, история цела.
+ *             Память ОСТАЁТСЯ — вернётесь, история цела. Память это задачи проекта
+ *             в tasks/<id>/ и архив копий до 1.10 в artifacts/history/.
  *   all     — снять всё, включая память.
+ *
+ * В предпросмотре хук отдельно называет число задач и незавершённых среди них: удаление
+ * необратимо, и это единственное место, где человек видит цену решения числом.
  *
  * Безопасность («добрый гость»):
  *   — удаляет ТОЛЬКО пути из реестра; чего в реестре нет — не трогает никогда;
@@ -23,7 +27,7 @@
  * Никогда не падает с ошибкой: не смог — сообщит и выйдет с нулём.
  */
 
-import { readFileSync, existsSync, statSync, readdirSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, lstatSync, readdirSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,9 +86,46 @@ for (const e of entries) {
   remove.push({ ...e, abs });
 }
 
+// -------- живой счётчик задач (только для показа) --------
+// Единственная видимая защита в необратимой операции: человек должен увидеть числом, сколько
+// задач он сносит и сколько из них не закончены. Счёт строго best-effort — он не имеет права
+// уронить прогон и НЕ влияет ни на inScope, ни на список удаления: цена сбоя у этого хука —
+// недоснятый кит, и платить её ради красивого числа нельзя.
+const TASKS_DIR = path.join(KIT_DIR, 'tasks');
+const TASK_ID_RE = /^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]*$/;
+const FINISHED = new Set(['done', 'blocked']);
+
+function countTasks() {
+  try {
+    if (!existsSync(TASKS_DIR)) return { total: 0, active: 0 };
+    let total = 0;
+    let active = 0;
+    for (const name of readdirSync(TASKS_DIR)) {
+      if (!TASK_ID_RE.test(name)) continue;
+      let isDir = false;
+      try { isDir = lstatSync(path.join(TASKS_DIR, name)).isDirectory(); } catch { /* не наше дело */ }
+      if (!isDir) continue;
+      total += 1;
+      // Осторожная сторона: не прочитали статус — считаем задачу незакрытой. Ошибиться
+      // «в работе» на закрытой задаче безобидно, ошибиться наоборот — нет.
+      let status = '';
+      try {
+        const front = readFileSync(path.join(TASKS_DIR, name, 'STATE.md'), 'utf8')
+          .match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        const f = front && front[1].match(/^status:\s*(.*)$/m);
+        status = f ? f[1].trim().toLowerCase() : '';
+      } catch { /* нет STATE.md или не читается — пусть будет «в работе» */ }
+      if (!FINISHED.has(status)) active += 1;
+    }
+    return { total, active };
+  } catch (err) {
+    return { failed: err.message };
+  }
+}
+
 const modeLabel = MODE === 'all'
-  ? 'ВСЁ, включая память (архив прошлых задач)'
-  : 'только служебные файлы (память в artifacts/history сохраняется)';
+  ? 'ВСЁ, включая память (задачи в tasks/ и архив копий до 1.10 в artifacts/history)'
+  : 'только служебные файлы (память — задачи в tasks/ и artifacts/history — сохраняется)';
 
 out(`Claude Agent Kit — удаление из проекта`);
 out(`Проект:  ${PROJECT_ROOT}`);
@@ -95,6 +136,14 @@ out('');
 // -------- Сухой прогон --------
 if (!APPLY) {
   out(`Будет удалено файлов/папок: ${remove.length}`);
+  const tasks = countTasks();
+  if (tasks.failed) {
+    out(`Задачи в .claude/tasks/ пересчитать не смог (${tasks.failed}) — на состав удаления это не влияет.`);
+  } else if (MODE === 'all') {
+    out(`Задач будет удалено: ${tasks.total} (в работе: ${tasks.active}).`);
+  } else {
+    out(`Задач сохраняется: ${tasks.total} — они память проекта, снять их можно режимом «всё».`);
+  }
   if (modified.length) {
     out('');
     out(`⚠ Вы правили эти служебные файлы (${modified.length}) — по умолчанию они СОХРАНЯЮТСЯ:`);
@@ -103,7 +152,7 @@ if (!APPLY) {
   }
   if (MODE === 'service' && kept.length) {
     out('');
-    out(`Память сохраняется (${kept.length} записей в artifacts/history) — снять её можно режимом «всё».`);
+    out(`Память сохраняется (${kept.length} записей в tasks/ и artifacts/history) — снять её можно режимом «всё».`);
   }
   if (missing.length) {
     out('');
@@ -146,7 +195,7 @@ if (!kitGone) { try { leftovers = readdirSync(KIT_DIR); } catch { /* */ } }
 
 out(`Удалено: ${ok}.`);
 if (KEEP_MODIFIED && modified.length) out(`Сохранены изменённые вами файлы: ${modified.length}.`);
-if (MODE === 'service' && kept.length) out(`Память сохранена: ${kept.length} записей в artifacts/history.`);
+if (MODE === 'service' && kept.length) out(`Память сохранена: ${kept.length} записей в tasks/ и artifacts/history.`);
 if (failed.length) { out(`Не удалось удалить (${failed.length}):`); for (const f of failed) out(`   • ${f}`); }
 
 if (kitGone) {

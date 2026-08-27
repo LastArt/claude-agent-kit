@@ -10,7 +10,8 @@
  *
  * Что кладём в реестр по каждому файлу:
  *   path   — путь от корня проекта (например ".claude/agents/explorer.md");
- *   group  — "service" (механизм кита) или "memory" (архив прошлых задач в artifacts/history);
+ *   group  — "service" (механизм кита) или "memory" (задачи проекта в tasks/<id>/ и архив
+ *            копий до 1.10 в artifacts/history);
  *   hash   — sha256 содержимого. ТОЛЬКО у статичных файлов кита (агенты, хуки, команды, ассеты,
  *            промт оркестратора). Живые файлы (settings.json, профиль, PLAN/REVIEW, кэш разведок
  *            в explores/) не хешируем: они законно меняются, совпадение всё равно ничего
@@ -49,6 +50,7 @@ const projRel = (abs) => toPosix(path.relative(PROJECT_ROOT, abs)); // ".claude/
 // Файлы, которые кит порождает уже ПОСЛЕ установки (их нет в мастере, но они наши).
 const alwaysOurs = (rel) =>
   rel === '.cckit-manifest.json' ||
+  rel === 'tasks' || rel.startsWith('tasks/') || // задачи проекта: указатель ACTIVE и папки задач
   rel === 'artifacts/history' || rel.startsWith('artifacts/history/') ||
   rel.startsWith('artifacts/') || // PLAN/REVIEW/ROADMAP/FAQ_TEMPLATE и снимки задач
   rel === 'explores' || rel.startsWith('explores/') || // кэш разведок модулей
@@ -62,6 +64,10 @@ function owned(rel) {
 
 // group + нужно ли хешировать
 function classify(rel) {
+  // Указатель активной задачи — служебный: он говорит, ЧТО идёт сейчас, а не помнит сделанное.
+  // Сами папки задач — память проекта: их щадит режим «только служебное».
+  if (rel === 'tasks/ACTIVE') return { group: 'service', hashed: false };
+  if (rel === 'tasks' || rel.startsWith('tasks/')) return { group: 'memory', hashed: false };
   if (rel === 'artifacts/history' || rel.startsWith('artifacts/history/')) return { group: 'memory', hashed: false };
   const mutable = new Set([
     'settings.json', 'settings.local.json',
@@ -107,6 +113,15 @@ if (!entries.some((e) => e.path === HIST)) entries.push({ path: HIST, group: 'me
 // снятие кита убирало и разведки, появившиеся позже.
 const EXPL = '.claude/explores';
 if (!entries.some((e) => e.path === EXPL)) entries.push({ path: EXPL, group: 'service', dir: true });
+
+// Задачи заводятся уже после установки, и каждая — своя папка. Заявляем каталог целиком
+// (`dir: true`), иначе задачи, созданные позже реестра, переживут /cckit_uninstall в режиме
+// «всё». Группа memory: в режиме «только служебное» каталог не попадает в список удаления.
+const TASKS = '.claude/tasks';
+if (!entries.some((e) => e.path === TASKS)) entries.push({ path: TASKS, group: 'memory', dir: true });
+// Указатель активной задачи — служебный и снимается вместе с механизмом.
+const ACTIVE = '.claude/tasks/ACTIVE';
+if (!entries.some((e) => e.path === ACTIVE)) entries.push({ path: ACTIVE, group: 'service' });
 
 // Собранные страницы (карта проекта, инструкция) рождаются хуками уже после установки, поэтому
 // на момент записи реестра их обычно ещё нет. Заявляем их заранее: появятся — снимутся вместе
