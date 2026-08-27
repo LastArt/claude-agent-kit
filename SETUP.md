@@ -32,6 +32,7 @@ claude-agent-kit/
     │                        update.mjs / uninstall.mjs — обновление и удаление набора
     │                        verify.mjs — прогон проверок проекта, пишет artifacts/VERIFY.json
     │                        gate.mjs — Stop-гейт: не даёт закончить ход с красными проверками
+    │                        events.mjs — журнал событий artifacts/events.jsonl (только дописывание)
     │                        stubs.mjs — раскладывает заглушки рабочих файлов
     │                        make-guide.mjs, git-status.mjs, stats.mjs, map.mjs
     ├── agents/              девять субагентов

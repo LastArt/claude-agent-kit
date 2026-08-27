@@ -245,6 +245,21 @@ Stop-хук сами и полностью перезапустите Claude Cod
 {
   "permissions": {
     "deny": [
+      "Read(.env)",
+      "Edit(.env)",
+      "Write(.env)",
+      "Read(**/.env)",
+      "Edit(**/.env)",
+      "Write(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(**/.env.*)",
+      "Write(**/.env.*)",
+      "Read(**/*.pem)",
+      "Edit(**/*.pem)",
+      "Write(**/*.pem)",
+      "Read(**/*.key)",
+      "Edit(**/*.key)",
+      "Write(**/*.key)",
       "Bash(git push)",
       "Bash(git push:*)",
       "Bash(git push *)",
@@ -260,14 +275,66 @@ Stop-хук сами и полностью перезапустите Claude Cod
       "Edit(.claude/artifacts/VERIFY.lock)",
       "Write(.claude/artifacts/GATE_STATE.json)",
       "Edit(.claude/artifacts/GATE_STATE.json)",
+      "Write(.claude/artifacts/events.jsonl)",
+      "Edit(.claude/artifacts/events.jsonl)",
       "Write(.claude/settings.local.json)",
       "Edit(.claude/settings.local.json)",
       "Write(.claude/settings.json)",
-      "Edit(.claude/settings.json)"
+      "Edit(.claude/settings.json)",
+      "Write(.claude/tasks/**/STATE.md)",
+      "Edit(.claude/tasks/**/STATE.md)",
+      "Write(.claude/tasks/ACTIVE)",
+      "Edit(.claude/tasks/ACTIVE)"
     ]
   }
 }
 ```
+
+## Журнал событий
+
+`.claude/artifacts/events.jsonl` — машинный журнал проекта: одна строка JSON на событие.
+Файл только **дописывается** и никогда не перезаписывается, поэтому по нему потом строятся
+статистика, ретроспектива и дашборд.
+
+Пишут в него два хука, специально ничего делать не нужно:
+
+- `task.mjs` — `task_opened` (задача заведена), `status_changed` (сменился статус),
+  `task_closed` (задача закрыта, с полем `duration_min`);
+- `gate.mjs` — `gate_result` (вердикт машинной приёмки: `pass`, `partial`, `fail`, `blocked`,
+  `none`, `stale`).
+
+Строка выглядит так — четыре ключа всегда и в этом порядке:
+
+```
+{"ts":"2026-08-27T11:22:33.123Z","task_id":"2026-08-27-imya","event":"status_changed","payload":{"from":"planning","to":"implementing"}}
+```
+
+`ts` — UTC в формате ISO-8601 с миллисекундами: без смещения строки нельзя сравнить между
+машинами, а без секунд два события одной минуты неразличимы по порядку. Человекочитаемое время
+осталось в `STATE.md` задачи и никуда не делось.
+
+Посмотреть последние записи: `node .claude/hooks/events.mjs --selftest`. Файл лежит под
+`.gitignore` вместе со всем `artifacts/` — названия задач и имена упавших проверок в репозиторий
+не уезжают. **Ротации нет**: журнал растёт линейно, порядка сотни байт на событие; надоел —
+удалите файл, дописывание начнётся заново.
+
+**Три обязанности у того, кто журнал читает.** Первая: пропускать нечитаемую строку, а не
+падать на ней — лока у файла нет, и две параллельные сессии теоретически способны наложить
+запись. Вторая: экранировать значения при выводе в HTML. Очистка убирает управляющие символы,
+но `<`, `>` и `&` не трогает, и название задачи вида `фикс <script> в шапке` доедет до журнала
+как есть; готовый образец экранирования в наборе уже есть — `esc()` в `.claude/hooks/map.mjs`.
+
+Третья: не считать сбоем запись `status_changed`, у которой `from` совпал с `to`. Такое
+случается, когда статус выставили повторно, и журнал обязан это показать как есть: строку
+в `STATE.md` пишет `task.mjs status` безусловно, и отфильтруй мы событие — журнал разошёлся
+бы со `STATE.md`. Две правды об одной задаче хуже, чем одна скучная запись.
+
+**И главное: журнал — рубеж видимости, а не доказательство.** Два правила
+`Write(.claude/artifacts/events.jsonl)` и `Edit(.claude/artifacts/events.jsonl)` в образце
+`permissions.deny` выше закрывают прямую правку файла, но не `Bash`, а сама команда
+`node .claude/hooks/events.mjs --emit …` — санкционированный способ дописать строку, байт в байт
+неотличимую от настоящей. Журнал делает работу видимой; уликой он не становится. Поэтому его
+записи **сверяют** со `STATE.md` задачи и `artifacts/VERIFY.json`, а не заменяют их ими.
 
 ## Обновление настроек в открытом Claude Code
 
