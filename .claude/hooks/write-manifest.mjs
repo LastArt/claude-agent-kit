@@ -75,6 +75,11 @@ function classify(rel) {
     '.init-mode', '.cckit-manifest.json',
   ]);
   if (mutable.has(rel)) return { group: 'service', hashed: false };
+  // Журнал событий — накопленная история проекта, а не снимок механизма: GATE_STATE.json после
+  // снятия кита бессмыслен и восстанавливается взводом, а журнал не восстанавливается ничем.
+  // Режим «сними механизм, память оставь» обязан его сберечь. Строка стоит ВЫШЕ общего правила
+  // про artifacts/ — иначе оно перехватит журнал в service.
+  if (rel === 'artifacts/events.jsonl') return { group: 'memory', hashed: false };
   if (rel.startsWith('artifacts/')) return { group: 'service', hashed: false }; // живые артефакты
   if (rel === 'explores' || rel.startsWith('explores/')) return { group: 'service', hashed: false }; // кэш разведок
   if (rel === 'map.html' || rel === 'guide.html') return { group: 'service', hashed: false };        // собранные страницы
@@ -136,6 +141,12 @@ for (const page of ['.claude/map.html', '.claude/guide.html']) {
 for (const f of ['.claude/artifacts/VERIFY.json', '.claude/artifacts/VERIFY.lock', '.claude/artifacts/GATE_STATE.json']) {
   if (!entries.some((e) => e.path === f)) entries.push({ path: f, group: 'service' });
 }
+
+// Журнал событий рождается при первом же событии, то есть почти всегда позже реестра. Заявляем
+// его заранее по той же причине — не заявишь, и он переживёт /cckit_uninstall и не даст снять
+// .claude/ целиком. Группа memory: режим «только служебное» его щадит намеренно.
+const EVENTS = '.claude/artifacts/events.jsonl';
+if (!entries.some((e) => e.path === EVENTS)) entries.push({ path: EVENTS, group: 'memory' });
 
 // Сам манифест — служебный, уезжает вместе с китом.
 entries.push({ path: '.claude/.cckit-manifest.json', group: 'service' });

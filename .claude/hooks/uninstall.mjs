@@ -9,7 +9,8 @@
  * Режимы:
  *   service — снять только механизм кита (агенты, хуки, команды, промт, настройки).
  *             Память ОСТАЁТСЯ — вернётесь, история цела. Память это задачи проекта
- *             в tasks/<id>/ и архив копий до 1.10 в artifacts/history/.
+ *             в tasks/<id>/, журнал событий artifacts/events.jsonl и архив копий до 1.10
+ *             в artifacts/history/.
  *   all     — снять всё, включая память.
  *
  * В предпросмотре хук отдельно называет число задач и незавершённых среди них: удаление
@@ -124,8 +125,8 @@ function countTasks() {
 }
 
 const modeLabel = MODE === 'all'
-  ? 'ВСЁ, включая память (задачи в tasks/ и архив копий до 1.10 в artifacts/history)'
-  : 'только служебные файлы (память — задачи в tasks/ и artifacts/history — сохраняется)';
+  ? 'ВСЁ, включая память (задачи в tasks/, журнал artifacts/events.jsonl и архив копий до 1.10 в artifacts/history)'
+  : 'только служебные файлы (память — задачи в tasks/, журнал artifacts/events.jsonl и artifacts/history — сохраняется)';
 
 out(`Claude Agent Kit — удаление из проекта`);
 out(`Проект:  ${PROJECT_ROOT}`);
@@ -152,7 +153,7 @@ if (!APPLY) {
   }
   if (MODE === 'service' && kept.length) {
     out('');
-    out(`Память сохраняется (${kept.length} записей в tasks/ и artifacts/history) — снять её можно режимом «всё».`);
+    out(`Память сохраняется (${kept.length} записей в tasks/, artifacts/events.jsonl и artifacts/history) — снять её можно режимом «всё».`);
   }
   if (missing.length) {
     out('');
@@ -195,7 +196,7 @@ if (!kitGone) { try { leftovers = readdirSync(KIT_DIR); } catch { /* */ } }
 
 out(`Удалено: ${ok}.`);
 if (KEEP_MODIFIED && modified.length) out(`Сохранены изменённые вами файлы: ${modified.length}.`);
-if (MODE === 'service' && kept.length) out(`Память сохранена: ${kept.length} записей в tasks/ и artifacts/history.`);
+if (MODE === 'service' && kept.length) out(`Память сохранена: ${kept.length} записей в tasks/, artifacts/events.jsonl и artifacts/history.`);
 if (failed.length) { out(`Не удалось удалить (${failed.length}):`); for (const f of failed) out(`   • ${f}`); }
 
 if (kitGone) {
