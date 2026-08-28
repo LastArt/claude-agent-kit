@@ -61,6 +61,11 @@ const STALE_HOURS = 6;
 const VERIFY_TIMEOUT_MS = 870 * 1000;   // меньше таймаута самого хука (900 с) в settings.json
 const TAG = '[gate]';
 
+// Пределы хвоста упавшей проверки при печати в stderr (см. `cleanTail`). Свои, а не взятые
+// на веру из verify.mjs: тот режет вывод до 40 строк и 4 КБ, но `VERIFY.json` — обычный файл.
+const TAIL_MAX_LINES = 60;
+const TAIL_MAX_COLS = 500;
+
 const DRY = process.argv.includes('--dry');
 
 // --- точка входа ------------------------------------------------------------
@@ -352,7 +357,7 @@ function decide() {
       next.verify = 'partial';
       writeState(next);
       say(`приёмка прошла частично: выполнено ${report.passed} из ${report.total}, пропущено ${report.skipped}`);
-      const names = (report.checks || []).filter((c) => c.skipped).map((c) => c.name).join(', ');
+      const names = (report.checks || []).filter((c) => c.skipped).map((c) => clean(c.name)).join(', ');
       if (names) say(`пропущено: ${names}`);
     } else {
       next.verify = 'pass';
@@ -376,7 +381,7 @@ function decide() {
     noteInTask(next, `приёмка: ${MAX_ATTEMPTS} попытки не помогли — blocked`);
     emitGate(next, { status: 'blocked', attempt: next.attempts, failed: report && report.failed ? report.failed : '' });
     say(`⛔ три попытки не помогли, нужен человек: приёмка на задаче «${st.task}» так и не стала зелёной`);
-    if (report && report.failed) say(`последняя упавшая проверка: ${report.failed}`);
+    if (report && report.failed) say(`последняя упавшая проверка: ${clean(report.failed)}`);
     say('человеку: как снять гейт — см. .claude/CUSTOMIZE.md, раздел «Машинная приёмка»');
     summary();
     process.exit(0);
@@ -394,19 +399,29 @@ function decide() {
   blockTurn(report, next.attempts);
 }
 
-/** Текст, который возвращается агенту вместе с exit 2. Один рецепт: почини и запусти снова. */
+/**
+ * Текст, который возвращается агенту вместе с exit 2. Один рецепт: почини и запусти снова.
+ *
+ * Всё, что пришло из `VERIFY.json`, чистится ЗДЕСЬ, на печати: файл собирается из вывода команд
+ * проекта, то есть из чужого текста, а stderr Stop-хука возвращается агенту вместе с кодом 2 —
+ * то есть попадает в контекст модели. Короткие значения — общей `clean`, многострочный хвост —
+ * `cleanTail` (почему для него не годится `clean` — см. комментарий к ней).
+ */
 function blockTurn(report, attempts) {
   const failed = report && report.failed
     ? (report.checks || []).find((c) => c.name === report.failed)
     : null;
   err(`${TAG} ⛔ ход не завершён: проверки не проходят (попытка ${attempts} из ${MAX_ATTEMPTS}).`);
   if (failed) {
-    err(`${TAG} упала проверка: ${failed.name}`);
-    err(`${TAG} команда: ${failed.cmd}`);
-    err(`${TAG} код возврата: ${failed.code}${failed.reason ? ` (${failed.reason})` : ''}`);
+    err(`${TAG} упала проверка: ${clean(failed.name)}`);
+    err(`${TAG} команда: ${clean(failed.cmd)}`);
+    // String() перед clean: код возврата — число, а местная `clean` написана как
+    // `String(s || '')` и превратила бы его в пустую строку на нуле.
+    const reason = failed.reason ? ` (${clean(failed.reason)})` : '';
+    err(`${TAG} код возврата: ${clean(String(failed.code))}${reason}`);
     if (failed.tail) {
       err(`${TAG} последние строки вывода:`);
-      for (const l of String(failed.tail).split('\n')) err(`  ${l}`);
+      for (const l of cleanTail(failed.tail)) err(`  ${l}`);
     }
   } else {
     err(`${TAG} подробности: ${rel(VERIFY_JSON)}`);
@@ -429,7 +444,7 @@ function dryRun(st, info) {
   }
   const report = readReport();
   if (report && report.status === 'fail') {
-    say(`гейт заблокировал бы ход: последний прогон красный, упала проверка «${report.failed}»`);
+    say(`гейт заблокировал бы ход: последний прогон красный, упала проверка «${clean(report.failed)}»`);
   } else {
     say(`гейт запустил бы node ${rel(VERIFY)}; красный результат вернул бы ход агенту (код 2)`);
   }
@@ -598,6 +613,31 @@ function summary() {
 function clean(s) {
   // управляющие символы (в т. ч. перевод строки) заменяем пробелом
   return String(s || '').replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+/**
+ * Хвост вывода упавшей проверки — чистка ПОСТРОЧНО. Возвращает массив готовых к печати строк.
+ *
+ * Почему не `clean`, хотя чистить надо то же самое. `clean` схлопывает `\s+` в один пробел и
+ * режет результат до 200 знаков: пропустить через неё `tail` целиком — значит превратить
+ * многострочный вывод в однострочный огрызок ровно там, куда человек смотрит, чтобы понять,
+ * ЧТО сломалось. Поэтому здесь разбиение на строки и отступы сохраняются, а управляющие
+ * символы (ANSI-escape, возврат каретки, нулевой байт) снимаются в каждой строке отдельно —
+ * тем же классом, что и в `clean`, чтобы правило чистки в наборе оставалось одно.
+ *
+ * Пределы свои, хотя `verify.mjs` уже режет хвост до 40 строк и 4 КБ: `VERIFY.json` — обычный
+ * файл, его пишет `Bash` беспрепятственно, и доверие к чужой обрезке — это отсутствие обрезки.
+ * Обрезку отмечаем строкой, а не молчанием: молча укороченный вывод хуже длинного.
+ */
+function cleanTail(s) {
+  const all = String(s == null ? '' : s).split('\n');
+  const kept = all.length > TAIL_MAX_LINES ? all.slice(-TAIL_MAX_LINES) : all;
+  const lines = kept.map((l) => {
+    const text = l.replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+$/, '');
+    return text.length > TAIL_MAX_COLS ? `${text.slice(0, TAIL_MAX_COLS)} …` : text;
+  });
+  if (all.length > TAIL_MAX_LINES) lines.unshift('… (обрезано)');
+  return lines;
 }
 
 function firstLines(text, n) {
