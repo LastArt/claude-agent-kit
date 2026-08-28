@@ -71,8 +71,45 @@ function isLiving(rel) {
 // Никогда не едет из мастера в проект.
 const NEVER_SHIP = new Set(['settings.local.json', 'CLAUDE.md', 'PROJECT_PROFILE.template.md', '.cckit-manifest.json']);
 
+// Три папки памяти принадлежат ПРОЕКТУ, а не набору: artifacts/, tasks/, explores/.
+// Из них в проект едет только то, что кит и так материализует сам, — заглушки stubs.mjs
+// (его PLACES). Всё прочее там — чужая память: VERIFY.lock сделал бы блок проверок
+// «подтверждённым» без вашего «да» (verify.mjs: accepted = lock.hash === canon.hash),
+// GATE_STATE.json принёс бы чужой вердикт приёмки, events.jsonl — названия чужих задач,
+// ROADMAP.md — план чужого продукта. Список белый по той же причине, что ship.list:
+// забытая строка ломает громко (не доехал шаблон — видно на первом запуске), а не утекает
+// молча. Перечень обязан совпадать с PLACES в hooks/stubs.mjs — меняешь там, поменяй и здесь.
+const MEMORY_DIRS = ['artifacts/', 'tasks/', 'explores/'];
+const MEMORY_SHIPPED = new Set(['artifacts/FAQ_TEMPLATE.md', 'tasks/ACTIVE', 'explores/INDEX.md']);
+const neverShip = (rel) =>
+  NEVER_SHIP.has(rel) || (MEMORY_DIRS.some((d) => rel.startsWith(d)) && !MEMORY_SHIPPED.has(rel));
+
 const sha = (file) => { try { return 'sha256:' + createHash('sha256').update(readFileSync(file)).digest('hex'); } catch { return ''; } };
 const firstLine = (file) => { try { return (readFileSync(file, 'utf8').split('\n')[0] || '').trim(); } catch { return ''; } };
+
+// Исходники самого набора: тут .claude/ не копия механизма, а продукт, и он под git.
+// Признак содержательный, а не по именам файлов: оба установщика в корне И .claude/CLAUDE.md,
+// ПЕРВАЯ СТРОКА которого называет набор (у пользователя .claude/CLAUDE.md — легальное место
+// для инструкций его собственного проекта). update ПИШЕТ, поэтому цена ложного срабатывания —
+// заблокированное обновление живого проекта: перечисляем сработавшие маркеры и говорим,
+// что делать тому, кто получил отказ ошибочно.
+const kitClaudeMd = path.join(KIT_DIR, 'CLAUDE.md');
+const marks = [];
+if (existsSync(path.join(PROJECT_ROOT, 'install.ps1'))) marks.push('install.ps1 в корне проекта');
+if (existsSync(path.join(PROJECT_ROOT, 'install.sh'))) marks.push('install.sh в корне проекта');
+if (existsSync(kitClaudeMd) && firstLine(kitClaudeMd).includes('Claude Agent Kit')) {
+  marks.push('.claude/CLAUDE.md, первая строка называет Claude Agent Kit');
+}
+if (marks.length === 3) {
+  done([
+    'Это исходники самого набора, а не проект с китом: здесь .claude/ и есть продукт,',
+    'он под git и правится руками. Обновлять нечего — обновляют отсюда, а не сюда.',
+    'Сработали все три признака: ' + marks.join('; ') + '.',
+    'Если это НЕ исходники набора — признак ошибся. Обновление можно продолжить только',
+    'руками: скопируйте нужные файлы из ~/.claude/agent-kit. Совпадение стоит убрать',
+    '(например, переименовать первую строку .claude/CLAUDE.md) и сообщить автору набора.',
+  ].join('\n'));
+}
 
 // Хеши из манифеста: путь-с-.claude/ -> hash
 let manifestHashes = null;
@@ -93,7 +130,7 @@ const masterFiles = [];
     let st; try { st = statSync(abs); } catch { continue; }
     if (st.isDirectory()) { walk(abs); continue; }
     const rel = toPosix(path.relative(MASTER, abs));
-    if (NEVER_SHIP.has(rel)) continue;
+    if (neverShip(rel)) continue;
     masterFiles.push(rel);
   }
 })(MASTER);
