@@ -34,11 +34,15 @@ claude-agent-kit/
     │                        gate.mjs — Stop-гейт: не даёт закончить ход с красными проверками
     │                        events.mjs — журнал событий artifacts/events.jsonl (только дописывание)
     │                        stubs.mjs — раскладывает заглушки рабочих файлов
+    │                        task.mjs — задачи: .claude/tasks/<id>/, статусы, список
+    │                        migrate-tasks.mjs — перенос старой истории задач в новую структуру
     │                        make-guide.mjs, git-status.mjs, stats.mjs, map.mjs
     ├── agents/              девять субагентов
     ├── assets/stubs/        эталонные заглушки PLAN/REVIEW/SECURITY/FAQ и INDEX разведок
-    └── artifacts/           PLAN.md, REVIEW.md, SECURITY.md, FAQ_TEMPLATE.md
-                             (рабочие файлы: в исходниках набора их нет, их кладёт stubs.mjs)
+    ├── artifacts/           VERIFY.json, GATE_STATE.json, events.jsonl, FAQ_TEMPLATE.md
+                             (рабочие файлы приёмки и проекта: в исходниках набора их нет)
+    └── tasks/               папка на задачу: STATE.md, PLAN.md, SECURITY.md, REVIEW.md;
+                             указатель ACTIVE. Тоже рабочие файлы — в исходниках их нет
 ```
 
 Единственный источник команд — `.claude/commands/`. Поэтому в развёрнутом проекте видны все
@@ -126,7 +130,8 @@ node .claude/hooks/check-syntax.mjs --selftest
 ```
 
 Команда добавляет только недостающие файлы. Уже существующие (`settings.json`, агенты,
-`PROJECT_PROFILE.md`, `PLAN.md` и другие) не изменяются; их список выводится в конце.
+`PROJECT_PROFILE.md`, папки задач `.claude/tasks/` и другие) не изменяются; их список
+выводится в конце.
 
 Затем: выполните `/cckit_research`, перезапустите Claude Code.
 
@@ -233,7 +238,7 @@ node .claude/hooks/banner.mjs
    Без git (скачан ZIP) — скачайте свежий ZIP, распакуйте поверх и запустите установщик.
 2. **Проекты** — в каждом развёрнутом проекте выполните `/cckit_update`. Он обновляет механизм
    (агентов, хуки, команды) до версии из `~/.claude/agent-kit/`, но бережёт живые файлы
-   (`settings.json`, `PROJECT_PROFILE.md`, `PLAN.md`/`REVIEW.md`, история) и ваши правки:
+   (`settings.json`, `PROJECT_PROFILE.md`, папки задач `.claude/tasks/`, история) и ваши правки:
    что меняли сами — не перезаписывает молча, а показывает и спрашивает. Устаревшие файлы
    прошлых версий предлагает удалить.
 
