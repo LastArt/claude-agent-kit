@@ -48,13 +48,16 @@ foreach ($raw in Get-Content $shipList) {
   }
 }
 
-# Working files (plan, review, audit, explore cache) do not exist in the kit sources at all -
-# only the reference stubs in assets/stubs do. A dedicated hook materialises them: one piece of
-# logic shared by both installers and by the repository itself, instead of three copies.
+# Working places do not exist in the kit sources at all - only the reference stubs in
+# assets/stubs do. A dedicated hook materialises three of them: the task pointer tasks/ACTIVE,
+# the explore cache explores/INDEX.md and the FAQ form artifacts/FAQ_TEMPLATE.md. It does not
+# place the plan, review and audit forms at all: those live in assets/stubs, and task.mjs new
+# copies them into every task. The hook is separate so that one piece of logic is shared by
+# both installers and by the repository itself, instead of three copies.
 if (Get-Command node -ErrorAction SilentlyContinue) {
   & node (Join-Path $kit 'hooks\stubs.mjs') --force | Out-Null
 } else {
-  Write-Host "  ! node not found - PLAN/REVIEW/SECURITY stubs were not placed." -ForegroundColor Yellow
+  Write-Host "  ! node not found - working places were not placed (tasks/ACTIVE, explores/INDEX.md, artifacts/FAQ_TEMPLATE.md)." -ForegroundColor Yellow
   Write-Host "    Install Node.js, then run: node $kit\hooks\stubs.mjs" -ForegroundColor Yellow
 }
 

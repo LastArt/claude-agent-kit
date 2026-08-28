@@ -43,13 +43,15 @@ while IFS= read -r raw || [ -n "$raw" ]; do
   esac
 done < "$SHIP"
 
-# Рабочих файлов (план, ревью, аудит, кэш разведок) в исходниках набора нет вовсе — там только
-# эталонные заглушки в assets/stubs. Раскладывает их отдельный хук: одна логика на оба
-# установщика и на сам репозиторий, а не три копии одного и того же.
+# Рабочих мест в исходниках набора нет вовсе — там только эталонные заглушки в assets/stubs.
+# Отдельный хук материализует три из них: указатель задач tasks/ACTIVE, кэш разведок
+# explores/INDEX.md и форму FAQ artifacts/FAQ_TEMPLATE.md. Формы плана, ревью и аудита он
+# не раскладывает вовсе: они живут в assets/stubs, и в каждую задачу их копирует task.mjs new.
+# Хук отдельный, чтобы логика была одна на оба установщика и на сам репозиторий, а не три копии.
 if command -v node >/dev/null 2>&1; then
   node "$DEST/agent-kit/hooks/stubs.mjs" --force >/dev/null
 else
-  echo "  ! node не найден — заглушки PLAN/REVIEW/SECURITY не разложены."
+  echo "  ! node не найден — рабочие места не разложены (tasks/ACTIVE, explores/INDEX.md, artifacts/FAQ_TEMPLATE.md)."
   echo "    Поставьте Node.js и выполните: node ~/.claude/agent-kit/hooks/stubs.mjs"
 fi
 
