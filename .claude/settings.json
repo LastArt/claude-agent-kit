@@ -23,7 +23,7 @@
       "Bash(node .claude/hooks/verify.mjs --fresh)",
       "Bash(node .claude/hooks/verify.mjs --only:*)",
       "Bash(node .claude/hooks/verify.mjs --only *)",
-	  "Bash(node .claude/hooks/verify.mjs --show)",
+      "Bash(node .claude/hooks/verify.mjs --show)",
       "Bash(node .claude/hooks/gate.mjs)",
       "Bash(node .claude/hooks/gate.mjs --status)",
       "Bash(node .claude/hooks/gate.mjs --dry)",
@@ -31,17 +31,19 @@
       "Bash(node .claude/hooks/gate.mjs --arm)",
       "Edit(.claude/artifacts/**)",
       "Write(.claude/artifacts/**)",
-	  "Bash(node .claude/hooks/task.mjs list)",
-	  "Bash(node .claude/hooks/task.mjs path)",
-	  "Bash(node .claude/hooks/task.mjs close)",
-	  "Bash(node .claude/hooks/task.mjs status exploring)",
-	  "Bash(node .claude/hooks/task.mjs status planning)",
-	  "Bash(node .claude/hooks/task.mjs status awaiting_approval)",
-	  "Bash(node .claude/hooks/task.mjs status implementing)",
-	  "Bash(node .claude/hooks/task.mjs status reviewing)",
-	  "Bash(node .claude/hooks/task.mjs status reworking)",
-	  "Bash(node .claude/hooks/task.mjs status done)",
-	  "Bash(node .claude/hooks/task.mjs status blocked)"
+      "Bash(node .claude/hooks/task.mjs list)",
+      "Bash(node .claude/hooks/task.mjs path)",
+      "Bash(node .claude/hooks/task.mjs close)",
+      "Bash(node .claude/hooks/task.mjs status exploring)",
+      "Bash(node .claude/hooks/task.mjs status planning)",
+      "Bash(node .claude/hooks/task.mjs status awaiting_approval)",
+      "Bash(node .claude/hooks/task.mjs status implementing)",
+      "Bash(node .claude/hooks/task.mjs status reviewing)",
+      "Bash(node .claude/hooks/task.mjs status reworking)",
+      "Bash(node .claude/hooks/task.mjs status done)",
+      "Bash(node .claude/hooks/task.mjs status blocked)",
+      "Bash(node .claude/hooks/session.mjs --selftest)",
+      "Bash(node .claude/hooks/events.mjs --selftest)"
     ],
     "deny": [
       "Read(.env)",
@@ -74,14 +76,14 @@
       "Edit(.claude/artifacts/VERIFY.lock)",
       "Write(.claude/artifacts/GATE_STATE.json)",
       "Edit(.claude/artifacts/GATE_STATE.json)",
-	  "Write(.claude/artifacts/events.jsonl)",
-	  "Edit(.claude/artifacts/events.jsonl)",
+      "Write(.claude/artifacts/events.jsonl)",
+      "Edit(.claude/artifacts/events.jsonl)",
       "Write(.claude/settings.local.json)",
       "Edit(.claude/settings.local.json)",
       "Write(.claude/settings.json)",
       "Edit(.claude/settings.json)",
-	  "Write(.claude/tasks/**/STATE.md)",
-	  "Edit(.claude/tasks/**/STATE.md)",
+      "Write(.claude/tasks/**/STATE.md)",
+      "Edit(.claude/tasks/**/STATE.md)",
       "Write(.claude/tasks/ACTIVE)",
       "Edit(.claude/tasks/ACTIVE)"
     ]
@@ -94,6 +96,23 @@
           {
             "type": "command",
             "command": "node .claude/hooks/banner.mjs --compact",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/session.mjs --start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/session.mjs --end",
             "timeout": 10
           }
         ]
