@@ -58,6 +58,10 @@ const STATUSES = [
   'reviewing', 'reworking', 'done', 'blocked',
 ];
 
+// Потолок итераций ревью, контракт §3.2: без него связка «ревьюер придирается — исполнитель
+// правит» крутится, пока не кончится контекст.
+const REVIEW_LIMIT = 3;
+
 // --- точка входа ------------------------------------------------------------
 
 // Позиционные аргументы — всё, что не начинается с `--`: так же, как в gate.mjs.
@@ -154,12 +158,46 @@ function cmdStatus(list) {
   const src = readOr(file, '');
   const fm = frontMatter(src);
   const from = fm ? clean(fm.get('status')) : '';
-  const next = editFront(src, { status: value, updated: stamp() });
+
+  // Лимит итераций ревью держит КОД, а не текст промта. Раньше на этом месте стоял человек,
+  // и заменять его абзацем в промте оркестратора значило бы не заменять вовсе: промт можно
+  // не дочитать, а отказ команды не обойти. Поэтому механизм — отказ ДО какой-либо записи,
+  // а печатная строка «итерация N из 3» ниже осталась диагностикой, и только.
+  //
+  // Счётчик растёт только на ВХОДЕ в статус (`from !== 'reworking'`): оркестратор, дёрнувший
+  // команду дважды подряд, не теряет и не удваивает круг. И он не сбрасывается нигде — ни
+  // возвратом в `reviewing`, ни закрытием задачи: он считает ВОЗВРАТЫ на доработку, а не
+  // текущее состояние, и сброс превратил бы лимит в формальность — его обходили бы
+  // переключением статусов туда-обратно. Единственный законный сброс — новая задача.
+  const fields = { status: value, updated: stamp() };
+  let grew = false;          // счётчик увеличился именно сейчас
+  let iteration = null;      // номер итерации для вывода; null — статус не reworking
+  if (value === 'reworking') {
+    const iters = reviewIters(fm);
+    if (iters === null) {
+      die(`⚠ review_iterations в STATE.md не разобран («${clean(fm && fm.get('review_iterations'))}») — считаю лимит исчерпанным`);
+    }
+    grew = from !== 'reworking';
+    if (grew && iters + 1 > REVIEW_LIMIT) {
+      die([
+        `лимит итераций ревью исчерпан (${iters} из ${REVIEW_LIMIT}): дальше`,
+        '  node .claude/hooks/task.mjs status blocked, решает человек',
+      ].join('\n'));
+    }
+    iteration = grew ? iters + 1 : iters;
+    if (grew) fields.review_iterations = String(iteration);
+  }
+
+  const next = editFront(src, fields);
   if (!next) die(`в ${rel(file)} нет front-matter — статус записать некуда, ничего не меняю`);
   writeFileSync(file, next, 'utf8');
-  journal(file, `статус → ${value}`);
-  emit('status_changed', id, { from, to: value });
-  say(`${id}: статус ${value}`);
+  journal(file, grew ? `статус → ${value} · итерация ревью ${iteration}` : `статус → ${value}`);
+  const payload = { from, to: value };
+  if (grew) payload.iteration = String(iteration);   // ключ только на переходе — новых событий не заводим
+  emit('status_changed', id, payload);
+  say(iteration === null
+    ? `${id}: статус ${value}`
+    : `${id}: статус ${value} · итерация ревью ${iteration} из ${REVIEW_LIMIT}`);
 }
 
 /** Дописать строку в журнал активной задачи. Ручной инструмент — см. шапку файла. */
@@ -244,6 +282,7 @@ function cmdList() {
       // Заголовок мог приехать миграцией из чужого markdown, поэтому чистим и на выводе тоже.
       title: clean(fm.get('title')) || '(без названия)',
       status: clean(fm.get('status')).slice(0, 20) || '?',
+      iters: reviewIters(fm),
     });
   }
   if (!rows.length) { say('задач пока нет'); return; }
@@ -252,14 +291,35 @@ function cmdList() {
   const wId = Math.max(...rows.map((r) => r.id.length));
   const wStatus = Math.max(...rows.map((r) => r.status.length));
   say(`задач: ${rows.length}`);
+  const gateStopped = gate && clean(gate.status) === 'blocked';
+  let unparsed = false;
   for (const r of rows) {
     const mark = r.id === active ? '→' : ' ';
+    // Итерации ревью показываем, только когда они были: «0/3» у каждой свежей задачи — шум.
+    // Неразобранное значение отмечаем вопросом, а объясняем ОДНОЙ строкой после таблицы:
+    // шуметь предупреждением на каждой строке списка ни к чему.
+    let iters = '';
+    if (r.iters === null) { iters = '  · ревью: ?'; unparsed = true; }
+    else if (r.iters > 0) iters = `  · ревью: ${r.iters}/${REVIEW_LIMIT}`;
     // Приёмка — из GATE_STATE.json и только при совпадении task_id: проверки гоняются по всему
     // рабочему дереву, и приписать чужой вердикт соседней задаче было бы прямой ложью.
-    const verdict = gate && gate.task_id === r.id
-      ? `  · приёмка: ${clean(gate.verify) || 'нет'} (по дереву на ${clean(gate.armed_at) || '?'})`
-      : '';
-    out(`  ${mark} ${r.id.padEnd(wId)}  ${r.date}  ${r.status.padEnd(wStatus)}  ${r.title}${verdict}`);
+    let verdict = '';
+    if (gate && gate.task_id === r.id) {
+      const where = `по дереву на ${clean(gate.armed_at) || '?'}`;
+      verdict = gateStopped
+        ? `  · приёмка: остановлена (${clean(gate.verify) || 'нет'}) — ${where}`
+        : `  · приёмка: ${clean(gate.verify) || 'нет'} (${where})`;
+    }
+    out(`  ${mark} ${r.id.padEnd(wId)}  ${r.date}  ${r.status.padEnd(wStatus)}  ${r.title}${iters}${verdict}`);
+  }
+  if (unparsed) {
+    say('⚠ у задач с «ревью: ?» поле review_iterations в STATE.md не разобрано — status reworking по ним откажет');
+  }
+
+  // Памятка про два разных «blocked». Слово одно, смыслов два, и стоят они рядом в одном
+  // выводе — перепутать их проще всего именно здесь.
+  if (gateStopped || rows.some((r) => r.status === 'blocked')) {
+    say('`blocked` у задачи и «приёмка остановлена» — разное: первое про итерации ревью, второе про красные прогоны проверок');
   }
 
   // Расхождение показываем строкой, а не пустой ячейкой: пустая ячейка читается как
@@ -397,6 +457,30 @@ function frontMatter(src) {
     if (f) map.set(f[1], f[2].trim());
   }
   return map;
+}
+
+/**
+ * Сколько раз ревью уже возвращало задачу исполнителю. Ровно ТРИ исхода и ни одного больше:
+ *   поля нет вовсе         → 0. Законный ноль: задача заведена копией набора до 1.15.0,
+ *                            и `editFront` допишет поле при первом же переходе;
+ *   целое и не меньше нуля → оно само;
+ *   всё остальное          → null, «не разобрано», и вызывающий отказывает.
+ *
+ * Зажимать значение в ноль (`Math.max(0, …)`) здесь ЗАПРЕЩЕНО. Это единственная функция,
+ * на которой держится лимит, и двух трактовок одного значения в ней быть не должно:
+ * отрицательное обязано давать отказ, а не тихий ноль. `parseInt('-5')` даёт -5, сравнение
+ * «меньше трёх» не наступило бы очень долго, а поле можно удалить `Bash`-ом — правила `deny`
+ * закрывают по STATE.md только `Write`/`Edit`.
+ *
+ * Пустая строка отсекается ОТДЕЛЬНО от нуля намеренно: `Number('')` — это 0, и пустое поле
+ * иначе притворилось бы законным нулём, молча сбросив лимит.
+ */
+function reviewIters(fm) {
+  if (!fm || !fm.has('review_iterations')) return 0;
+  const raw = clean(fm.get('review_iterations'));
+  if (raw === '') return null;
+  const n = Number(raw);
+  return (Number.isInteger(n) && n >= 0) ? n : null;
 }
 
 /** Журнал — хвост STATE.md. Дата стоит в `updated:`, поэтому в строке только время. */
