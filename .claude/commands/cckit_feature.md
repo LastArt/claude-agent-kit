@@ -11,8 +11,18 @@ description: Запустить полный конвейер на задаче 
 
 ```
 новая задача (task.mjs new) → explorer → planner → security-auditor → [СТОП: жду моего «ок» на план + аудит]
-        → implementer → reviewer → [СТОП: жду моего «ок» на результат] → task.mjs close
+        → implementer → reviewer → вердикт из шапки REVIEW.md:
+              approved          → [СТОП: жду моего «ок» на результат] → task.mjs close
+              changes_requested → task.mjs status reworking → implementer → reviewer (до трёх раз)
+              blocked / отказ команды / вердикт не разобран → task.mjs status blocked → [СТОП]
 ```
+
+Подробности петли — `.claude/ORCHESTRATOR_PROMPT.md`, раздел «Петля доработки».
+
+**Возврат на доработку идёт без моего участия**, максимум три раза. Вердикт читается из шапки
+`REVIEW.md` — первый блок `---`, начинающийся первой строкой файла. `task.mjs status reworking`
+отказал (код 3), вердикт не разобран или там `verdict: blocked` → `task.mjs status blocked`
+и стоп: дальше решаю я.
 
 **Первый шаг — кэш разведок.** Определи целевой модуль(и) задачи и загляни в `.claude/explores/`:
 - есть `<slug>.md` по модулю И он свежий (под git: `git diff --quiet <git_commit из frontmatter>
