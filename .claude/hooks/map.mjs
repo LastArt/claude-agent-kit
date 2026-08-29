@@ -241,15 +241,48 @@ function filesFromPlan(src) {
   return [...found].slice(0, 12);
 }
 
-/** Итог задачи одной строкой — та же логика, по которой его писал archive-task в шапку записи. */
+/**
+ * Итог задачи одной строкой — та же логика, по которой его писал archive-task в шапку записи.
+ *
+ * С 1.15.0 `REVIEW.md` начинается с шапки `verdict / critical / important / minor`, и вердикт
+ * читается оттуда. Подсчёт эмодзи остаётся запасным путём: заголовки таблиц в форме содержат
+ * те же 🔴/🟡/⚪, и на нетронутой заглушке он давал «замечания: 🔴 1, 🟡 1» — то есть врал
+ * про ревью, которого не было.
+ */
 function outcomeFromReview(src) {
   const text = String(src).trim();
   if (!text) return 'ревью не проводилось';
+
+  // Число из поля шапки: только целое без знака. Плейсхолдер `<…>` и мусор дают null,
+  // и тогда счёт берётся эмодзи — врать числом из непрочитанного поля нельзя.
+  const count = (v) => (/^\d+$/.test(String(v == null ? '' : v).trim()) ? Number(v) : null);
+  const byMarks = () => {
+    const [crit, important] = ['🔴', '🟡'].map((mark) => (text.split(mark).length - 1));
+    return `замечания: 🔴 ${crit}, 🟡 ${important}`;
+  };
+
+  const fm = frontMatter(text);
+  if (fm.verdict !== undefined) {
+    if (fm.verdict === 'approved') return 'одобрено';
+    if (fm.verdict === 'blocked') return 'ревью невозможно';
+    if (fm.verdict === 'changes_requested') {
+      const crit = count(fm.critical);
+      const important = count(fm.important);
+      return (crit === null || important === null)
+        ? byMarks()
+        : `замечания: 🔴 ${crit}, 🟡 ${important}`;
+    }
+    // Поле есть, а значение не из трёх — свежая заглушка с плейсхолдером в угловых скобках
+    // либо мусор. Ревью по такому файлу не проводилось, и додумывать за ревьюера нечего.
+    return 'ревью не проводилось';
+  }
+
+  // Шапки нет вовсе — старый формат, и ветка НЕ мертва: по ней читаются задачи, приехавшие
+  // `migrate-tasks.mjs`, и `REVIEW.md`, написанные копиями набора до 1.15.0. Удалять её нельзя,
+  // пока такие задачи встречаются.
   if (/^APPROVED\s*$/m.test(text)) return 'APPROVED';
-  const counts = ['🔴', '🟡', '⚪'].map((mark) => (text.split(mark).length - 1));
-  const [crit, important] = counts;
-  if (crit || important) return `замечания: 🔴 ${crit}, 🟡 ${important}`;
-  return 'ревью проведено';
+  const [crit, important] = ['🔴', '🟡'].map((mark) => (text.split(mark).length - 1));
+  return (crit || important) ? `замечания: 🔴 ${crit}, 🟡 ${important}` : 'ревью проведено';
 }
 
 /** Запись для читалки: три файла задачи одним документом, как это выглядело в архиве. */
