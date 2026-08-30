@@ -68,16 +68,29 @@ const TAIL_MAX_COLS = 500;
 
 const DRY = process.argv.includes('--dry');
 
+// Режим считается ДО работы: он нужен обработчику падения, а разбирать `process.argv` заново
+// внутри `catch` значило бы дублировать разбор и однажды его рассинхронизировать.
+const MODE = process.argv.includes('--arm') ? 'arm'
+  : process.argv.includes('--disarm') ? 'disarm'
+  : process.argv.includes('--status') ? 'status'
+  : process.argv.includes('--selftest') ? 'selftest'
+  : 'decide';
+
 // --- точка входа ------------------------------------------------------------
 
 try {
-  if (process.argv.includes('--arm')) modeArm();
-  else if (process.argv.includes('--disarm')) modeDisarm();
-  else if (process.argv.includes('--status')) modeStatus();
-  else if (process.argv.includes('--selftest')) modeSelftest();
+  if (MODE === 'arm') modeArm();
+  else if (MODE === 'disarm') modeDisarm();
+  else if (MODE === 'status') modeStatus();
+  else if (MODE === 'selftest') modeSelftest();
   else decide();
 } catch (e) {
   say(`внутренняя ошибка: ${e && e.message ? e.message : e} — ход не блокирую`);
+  // Падение гейта — тоже исход хода, и до сих пор оно не оставляло в журнале ничего: по файлу
+  // «гейт не звали» и «гейт умер на середине» были неразличимы. Пара `mode` обязательна —
+  // `catch` накрывает ВСЕ режимы, и падение `--status` без неё читалось бы как несостоявшийся
+  // прогон приёмки. Полное сообщение об ошибке остаётся человеку в stderr строкой выше.
+  emitGate(readState(), { status: 'error', mode: MODE, reason: errCode(e) }, 2500);
   process.exit(0);
 }
 
@@ -107,14 +120,25 @@ function readState() {
   }
 }
 
+/**
+ * Записать состояние приёмки. Возвращает `true`, если файл лёг на диск, и `false`, если нет.
+ *
+ * Признак успеха нужен взводу: раньше ошибка записи глоталась, печаталась строкой — и `modeArm`
+ * следом безусловно сообщал «гейт взведён» и выходил нулём. Взвода при этом не существовало:
+ * `GATE_STATE.json` не появлялся, следующий ход завершался без приёмки, а человек и агент были
+ * уверены в обратном. Остальные вызывающие признак не смотрят намеренно: у них после записи
+ * идёт только выход, и обещания, которое можно не сдержать, они не дают.
+ */
 function writeState(state) {
   try {
     mkdirSync(path.dirname(STATE), { recursive: true });
     state.updated_at = new Date().toISOString();
     writeFileSync(STATE, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
     try { chmodSync(STATE, 0o600); } catch { /* Windows — прав такого вида нет */ }
+    return true;
   } catch (e) {
     say(`не удалось записать состояние: ${e.message}`);
+    return false;
   }
 }
 
@@ -169,12 +193,25 @@ function modeArm() {
     // текст: разница в отступах и комментариях на исполнение не влияет и уже покрыта checks_hash.
     tools_hash: toolsHash(info ? info.hash : '')
   };
-  writeState(state);
+  // Состояния на диске нет — значит взвода нет. Ни строки «гейт взведён», ни события: обещание
+  // приёмки, которой не будет, дороже молчания. Сама причина уже напечатана в `writeState`.
+  if (!writeState(state)) {
+    say('взвод не состоялся: состояние приёмки не записано');
+    process.exit(0);
+  }
   say(`гейт взведён на задачу «${task}»`);
   if (taskId) say(`id задачи: ${taskId}`);
   if (!info || info.count === 0) say('проверок в профиле нет — приёмке нечего запускать');
   else if (!info.accepted) say('блок проверок ещё не подтверждён (`verify.mjs --accept` делает человек)');
   else say(`набор проверок запомнен: ${info.count} шт., hash ${String(info.hash).slice(0, 12)}…`);
+  // Порядок «действие → событие»: сначала запись состояния и печать, потом журнал. Момент взвода
+  // до сих пор не логировался никак, и по журналу «взвода не было» было не отличить от
+  // «взвод не пишется». Пять секунд, а не десять: после вызова остаётся выход, но команду зовёт
+  // агент перед первым шагом плана, и лишние секунды ожидания здесь платит он.
+  emitGate(state, {
+    checks: info ? info.count : 0,
+    accepted: info && info.accepted ? 'yes' : 'no'
+  }, 5000, 'gate_armed');
   process.exit(0);
 }
 
@@ -545,12 +582,17 @@ function noteInTask(state, text) {
  * Третий параметр нужен ради ОДНОЙ точки: 10 с по умолчанию годятся там, где после вызова
  * идёт только `exit 0` и потеря стоит строчки в сводке; там, где после вызова остаётся
  * обязательное действие, вызывающий передаёт меньше.
+ *
+ * Четвёртый параметр — имя события, по умолчанию прежнее `gate_result`: шесть точек вердикта
+ * его не передают и не менялись. Второе имя ровно одно — `gate_armed` из `modeArm`. Взвод
+ * вердиктом не является, и заводить под него `payload.status` внутри `gate_result` значило бы
+ * смешать в одном имени «чем кончился ход» и «когда началась работа».
  */
-function emitGate(state, payload, timeoutMs = 10000) {
+function emitGate(state, payload, timeoutMs = 10000, event = 'gate_result') {
   try {
     if (DRY) return;   // сухой прогон не пишет никуда
     if (!existsSync(EVENTS_MJS)) return;
-    const args = [EVENTS_MJS, '--emit', 'gate_result', '--task', String((state && state.task_id) || '')];
+    const args = [EVENTS_MJS, '--emit', event, '--task', String((state && state.task_id) || '')];
     for (const [k, v] of Object.entries(payload || {})) {
       if (v === undefined || v === null) continue;   // нет значения — нет пары
       const sv = clean(String(v));                   // String() обязателен: см. комментарий выше
@@ -562,6 +604,19 @@ function emitGate(state, payload, timeoutMs = 10000) {
 }
 
 // --- вспомогательное --------------------------------------------------------
+
+/**
+ * Ошибка → короткий машинный признак для журнала: ТОЛЬКО `e.code` или имя класса, и ничего
+ * больше. `e.message` в журнал не попадает никогда: `JSON.parse` в современном Node цитирует
+ * в сообщении фрагмент разбираемого содержимого, а `GATE_STATE.json` хранит заголовок задачи —
+ * то есть свободный текст человека уехал бы в журнал через сообщение об ошибке, мимо правила
+ * «в payload только словарь или регулярка». Фильтр символов ниже — не защита от свободного
+ * текста (её даёт сам отказ от `e.message`), а страховка от нечитаемого `e.code` из чужого кода.
+ */
+function errCode(e) {
+  const c = e && (e.code || e.name);
+  return (c ? String(c).replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 40) : '') || 'Error';
+}
 
 /** `verify.mjs --hash` → {hash, accepted, count}. Любой сбой → null (не блокируем). */
 function hashInfo() {
