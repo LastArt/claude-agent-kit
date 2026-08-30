@@ -89,18 +89,18 @@
     ]
   },
   "hooks": {
-    "SessionStart": [
+        "SessionStart": [
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/banner.mjs --compact",
+            "command": "node .claude/hooks/session.mjs --start",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node .claude/hooks/session.mjs --start",
+            "command": "node .claude/hooks/banner.mjs --compact",
             "timeout": 10
           }
         ]
