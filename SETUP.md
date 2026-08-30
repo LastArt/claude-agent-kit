@@ -33,6 +33,7 @@ claude-agent-kit/
     │                        verify.mjs — прогон проверок проекта, пишет artifacts/VERIFY.json
     │                        gate.mjs — Stop-гейт: не даёт закончить ход с красными проверками
     │                        events.mjs — журнал событий artifacts/events.jsonl (только дописывание)
+    │                        session.mjs — события начала и конца сессии (хуки SessionStart и SessionEnd)
     │                        stubs.mjs — раскладывает заглушки рабочих файлов
     │                        task.mjs — задачи: .claude/tasks/<id>/, статусы, список
     │                        migrate-tasks.mjs — перенос старой истории задач в новую структуру
