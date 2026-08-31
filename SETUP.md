@@ -35,15 +35,15 @@ claude-agent-kit/
     │                        events.mjs — журнал событий artifacts/events.jsonl (только дописывание)
     │                        session.mjs — события начала и конца сессии (хуки SessionStart и SessionEnd)
     │                        stubs.mjs — раскладывает заглушки рабочих файлов
-    │                        task.mjs — задачи: .claude/tasks/<id>/, статусы, список
+    │                        task.mjs — задачи: .claude/tasks/<id>/, статусы, класс риска, список
     │                        migrate-tasks.mjs — перенос старой истории задач в новую структуру
     │                        make-guide.mjs, git-status.mjs, stats.mjs, map.mjs
     ├── agents/              девять субагентов
     ├── assets/stubs/        эталонные заглушки PLAN/REVIEW/SECURITY/FAQ и INDEX разведок
     ├── artifacts/           VERIFY.json, GATE_STATE.json, events.jsonl, FAQ_TEMPLATE.md
                              (рабочие файлы приёмки и проекта: в исходниках набора их нет)
-    └── tasks/               папка на задачу: STATE.md, PLAN.md, SECURITY.md, REVIEW.md;
-                             указатель ACTIVE. Тоже рабочие файлы — в исходниках их нет
+    └── tasks/               папка на задачу: STATE.md, PLAN.md, SECURITY.md, REVIEW.md,
+                             DONE.md; указатель ACTIVE. Тоже рабочие файлы — в исходниках их нет
 ```
 
 Единственный источник команд — `.claude/commands/`. Поэтому в развёрнутом проекте видны все
