@@ -9,7 +9,7 @@
  *      правят вместе, связаны на деле, а не на бумаге. Работает с первого дня, даже если
  *      кит поставили вчера, а репозиторию два года.
  *   2. .claude/tasks/<id>/ — задачи кита, у каждой своя папка: STATE.md (заголовок, дата,
- *      статус), PLAN.md (из него берутся затронутые файлы), SECURITY.md и REVIEW.md.
+ *      статус), PLAN.md (из него берутся затронутые файлы), SECURITY.md, REVIEW.md и DONE.md.
  *      Отсюда второй слой связей и подсветка «что трогали в этой доработке». Копии до 1.10
  *      хранили то же самое одной записью на задачу в .claude/artifacts/history/ — этот
  *      источник читается как legacy, с пропуском задач, уже прочитанных из tasks/.
@@ -171,6 +171,7 @@ function readTaskDirs() {
     const plan = readTaskFile(dir, 'PLAN.md') || '';
     const security = readTaskFile(dir, 'SECURITY.md') || '';
     const review = readTaskFile(dir, 'REVIEW.md') || '';
+    const done = readTaskFile(dir, 'DONE.md') || '';
     const fm = frontMatter(state);
     tasks.push({
       title: fm.title || name,
@@ -179,7 +180,7 @@ function readTaskDirs() {
       outcome: outcomeFromReview(review),
       files: filesFromPlan(plan),
       source: name,
-      text: joinTask(plan, security, review),
+      text: joinTask(plan, security, review, done),
     });
   }
   return tasks;
@@ -207,9 +208,15 @@ function readHistory() {
 }
 
 /**
- * Читаем ТОЛЬКО четыре известных имени и только обычные файлы. lstat не идёт по симлинку
+ * Читаем ТОЛЬКО пять известных имён и только обычные файлы. lstat не идёт по симлинку
  * намеренно: `tasks/<id>/PLAN.md`, подложенный ссылкой на чужой файл, иначе вшивается прямо
  * в map.html — а карту потом пересылают.
+ *
+ * Что именно карта несёт внутри себя: `PLAN.md`, `SECURITY.md`, `REVIEW.md` и `DONE.md` — то
+ * есть замысел, аудит замысла, замечания к коду и итог задачи с разделом «Осталось незакрытым».
+ * Вместе это перечень слабых мест проекта, поэтому `map.html` исключён из
+ * `/cckit_push-with-me` наравне с самими задачами. Вынимать один файл из пятёрки смысла нет:
+ * пересылаемой карту это не сделает, а впечатление создаст.
  */
 function readTaskFile(dir, name) {
   const file = path.join(dir, name);
@@ -234,7 +241,14 @@ function frontMatter(src) {
   return fields;
 }
 
-/** Пути из шагов плана: строки вида «_Файл:_ `путь`». Столько же, сколько брал archive-task. */
+/**
+ * Пути из шагов плана: строки вида «_Файл:_ `путь`». Столько же, сколько брал archive-task.
+ *
+ * Обрезка на двенадцати путях здесь ЗАКОННА: у карты задача показать, а не решать. Машинный
+ * пол класса риска считает пути СВОИМ разбором — `analysePlan()` в `task.mjs`, без обрезки,
+ * с учётом `_Файлы:_`, ограждённых блоков и не-ASCII, — и на эту функцию не опирается.
+ * Меняется форма плана — правятся обе; расхождение ищется grep-ом по именам.
+ */
 function filesFromPlan(src) {
   const found = new Set();
   for (const m of String(src).matchAll(/_Файл:_\s*`([^`]+)`/g)) found.add(m[1].trim());
@@ -285,13 +299,15 @@ function outcomeFromReview(src) {
   return (crit || important) ? `замечания: 🔴 ${crit}, 🟡 ${important}` : 'ревью проведено';
 }
 
-/** Запись для читалки: три файла задачи одним документом, как это выглядело в архиве. */
-function joinTask(plan, security, review) {
+/** Запись для читалки: четыре файла задачи одним документом, как это выглядело в архиве. */
+function joinTask(plan, security, review, done) {
   const parts = [String(plan).trim()];
   const sec = String(security).trim();
   const rev = String(review).trim();
+  const fin = String(done == null ? '' : done).trim();
   if (sec) parts.push(`---\n\n## Аудит безопасности\n\n${sec}`);
   if (rev) parts.push(`---\n\n## Ревью\n\n${rev}`);
+  if (fin) parts.push(`---\n\n## Приёмка\n\n${fin}`);
   return parts.filter(Boolean).join('\n\n');
 }
 
