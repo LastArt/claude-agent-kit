@@ -1,0 +1,16 @@
+{
+  "name": "cckit-pult",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Локальный демон пульта над claude-agent-kit: реестр проектов и чтение их .claude по HTTP. Только чтение.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "parity": "node tools/fingerprint-parity.mjs",
+    "nowrite": "node tools/no-write-check.mjs"
+  },
+  "dependencies": {}
+}
