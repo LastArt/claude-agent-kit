@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Задачи с идентификаторами (Claude Agent Kit): всё про одну задачу лежит в
- * `.claude/tasks/<ГГГГ-ММ-ДД-имя>/` — STATE.md, PLAN.md, SECURITY.md, REVIEW.md.
+ * `.claude/tasks/<ГГГГ-ММ-ДД-имя>/` — STATE.md, PLAN.md, SECURITY.md, REVIEW.md, DONE.md.
  * Какая задача идёт прямо сейчас, говорит однострочный `.claude/tasks/ACTIVE`.
  * Кроссплатформенно, БЕЗ внешних зависимостей: только встроенные модули `node:*`.
  *
@@ -11,6 +11,8 @@
  *   node .claude/hooks/task.mjs close              закрыть задачу и снять указатель
  *   node .claude/hooks/task.mjs list               все задачи: id, дата, статус, заголовок
  *   node .claude/hooks/task.mjs path               абсолютный путь активной задачи, и только он
+ *   node .claude/hooks/task.mjs class              класс риска по PLAN.md → поле class в STATE.md
+ *   node .claude/hooks/task.mjs stop <kind>        тип вопроса человеку: product|technical|security
  *
  * Про журнал. Обязательные записи делают `status` (смена статуса) и Stop-хук `gate.mjs`
  * (вердикт приёмки) — специально логировать ничего не нужно. `log` остаётся редким ручным
@@ -36,6 +38,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
+import { fenceMask } from './md-fence.mjs';
 
 const KIT_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PROJECT_ROOT = path.dirname(KIT_DIR);
@@ -44,6 +47,7 @@ const ACTIVE = path.join(TASKS, 'ACTIVE');
 const STUBS = path.join(KIT_DIR, 'assets', 'stubs');
 const GATE_STATE = path.join(KIT_DIR, 'artifacts', 'GATE_STATE.json');
 const EVENTS_MJS = path.join(KIT_DIR, 'hooks', 'events.mjs');
+const GATE_MJS = path.join(KIT_DIR, 'hooks', 'gate.mjs');
 const TAG = '[task]';
 
 // Форма идентификатора — дата и строчное латинское имя. Регэксп проверяет ФОРМУ, а не
@@ -55,12 +59,41 @@ const ID_MAX = 80;
 // Порядок статусов — тот же, что в эталоне assets/stubs/STATE.md.
 const STATUSES = [
   'exploring', 'planning', 'awaiting_approval', 'implementing',
-  'reviewing', 'reworking', 'done', 'blocked',
+  'reviewing', 'reworking', 'awaiting_acceptance', 'done', 'blocked',
 ];
 
 // Потолок итераций ревью, контракт §3.2: без него связка «ревьюер придирается — исполнитель
 // правит» крутится, пока не кончится контекст.
 const REVIEW_LIMIT = 3;
+
+// Тот же потолок для кругов аудита плана: «аудитор возражает — планировщик правит» крутится
+// ровно так же. Считается на ВХОДЕ в awaiting_approval, см. cmdStatus().
+const AUDIT_LIMIT = 3;
+
+// Закрытый словарь типов вопроса человеку (§5.5). Свободного текста подкоманда `stop` не несёт
+// именно поэтому — её место в permissions.allow.
+const STOP_KINDS = ['product', 'technical', 'security'];
+
+// Три класса риска по возрастанию. Порядок в массиве — и есть отношение «больше»:
+// сравнение идёт по индексу, отдельной таблицы весов нет.
+const CLASSES = ['cosmetic', 'standard', 'elevated'];
+
+// Форма шага плана и маркер файлов в нём. Обе формы — часть контракта с планировщиком,
+// он же записан в assets/stubs/PLAN.md и в промте planner.
+const STEP_RE = /^\s*-\s*\[[ xX]\]\s*\*\*(\d+)\./;
+const MARK_RE = /_Файлы?:_/;
+
+// Правила пола по таблице §5.1 спецификации, см. floorFor().
+const CODE_EXT = ['.py', '.mjs', '.js', '.ts', '.jsx', '.tsx', '.go', '.rs', '.java', '.php', '.rb', '.sql'];
+const DATA_EXT = ['.yml', '.yaml', '.json', '.toml', '.ini', '.env', '.conf', '.sql'];
+const RISKY_WORDS = ['config', 'conf', 'settings', 'template', 'schema', 'migrations', 'routes', 'auth', 'secrets'];
+const TEST_DIR = /(^|\/)(tests?|__tests__|spec|specs|fixtures)\//;
+
+// Сколько строк с чужим текстом печатать, прежде чем сказать «и ещё N». Ограничение ПЕЧАТИ,
+// а не разбора: в разборе учитываются все пути до единого.
+const PRINT_MAX = 10;
+
+const PROFILE = path.join(KIT_DIR, 'PROJECT_PROFILE.md');
 
 // Событие, которое уже заслужено записью на диск, но ещё не доехало до журнала: между
 // `writeFileSync` и `emit(...)` есть код, и он может упасть. Выставляет `pend()` сразу после
@@ -86,6 +119,8 @@ try {
   else if (cmd === 'close') cmdClose();
   else if (cmd === 'list') cmdList();
   else if (cmd === 'path') cmdPath();
+  else if (cmd === 'class') cmdClass();
+  else if (cmd === 'stop') cmdStop(args);
   else usage();
 } catch (e) {
   // Действие могло состояться, а событие — не доехать: между записью на диск и `emit(...)`
@@ -155,6 +190,7 @@ function cmdNew(rawTitle) {
   placeStub('PLAN.md', path.join(dir, 'PLAN.md'));
   placeStub('SECURITY.md', path.join(dir, 'SECURITY.md'));
   placeStub('REVIEW.md', path.join(dir, 'REVIEW.md'));
+  placeStub('DONE.md', path.join(dir, 'DONE.md'));
 
   try {
     writeFileSync(ACTIVE, `${id}\n`, 'utf8');
@@ -192,23 +228,72 @@ function cmdStatus(list) {
   // возвратом в `reviewing`, ни закрытием задачи: он считает ВОЗВРАТЫ на доработку, а не
   // текущее состояние, и сброс превратил бы лимит в формальность — его обходили бы
   // переключением статусов туда-обратно. Единственный законный сброс — новая задача.
+  //
+  // У аудита плана счётчик СВОЙ и устроен так же (`audit_iterations`), но считает он ПОДАЧУ
+  // плана на аудит, а не возврат: `grew = from !== 'awaiting_approval'`. Почему вход в статус,
+  // а не переход `awaiting_approval → planning`: аудитор зовётся именно при этом статусе,
+  // обойти его нельзя, а привязка к источнику перехода оставляла бы маршрут
+  // `awaiting_approval → exploring → planning`, который не стоил бы ни одного круга.
+  // Предусловие перехода в `awaiting_acceptance` — ДВЕРЬ, а не табличка, и проверяется оно
+  // ДО `editFront()` и до любой записи. Разрешён вход только из `reviewing` и только при
+  // `verdict: approved` в шапке `REVIEW.md` этой задачи. Не выполнено любое из двух — отказ
+  // кодом 3, и не происходит НИЧЕГО: ни смены статуса, ни журнала, ни события, ни снятия взвода.
+  //
+  // Без обещаний, которых механизм не даёт. Предусловие отсекает переход из любого другого
+  // статуса и при любом другом вердикте — и только это. Сам `REVIEW.md` правилами `deny`
+  // не закрыт и закрыт быть не может: его ведёт ревьюер. Поэтому подделка вердикта остаётся
+  // возможной, путь лишь дорожает на две операции; машинную приёмку она больше не снимает —
+  // это держит условие `unverified` внутри `gate.mjs` (`modeDisarm`), — и видно в журнале
+  // парами `gate_was` / `gate_verify`. Вариант «пустить, но взвод не снимать никогда» отклонён
+  // человеком: он превращал снятие в декорацию.
+  //
+  // Повторный вызов из самого `awaiting_acceptance` тоже отказывает, и это законно: взвод
+  // к этому моменту уже снят, повторять нечего.
+  if (value === 'awaiting_acceptance') {
+    const verdict = reviewVerdict(dir);
+    if (from !== 'reviewing' || verdict !== 'approved') {
+      die([
+        'в awaiting_acceptance пускаю только из reviewing и только при verdict: approved',
+        `  сейчас статус «${from || 'не разобран'}», вердикт в REVIEW.md «${verdict || 'не разобран'}»`,
+        '  ничего не изменено: ни статус, ни взвод приёмки',
+      ].join('\n'));
+    }
+  }
+
   const fields = { status: value, updated: stamp() };
   let grew = false;          // счётчик увеличился именно сейчас
-  let iteration = null;      // номер итерации для вывода; null — статус не reworking
+  let iteration = null;      // номер итерации для вывода; null — статус без счётчика
+  let counter = '';          // какой именно счётчик вырос — для строк человеку
   if (value === 'reworking') {
-    const iters = reviewIters(fm);
-    if (iters === null) {
+    const n = iters(fm, 'review_iterations');
+    if (n === null) {
       die(`⚠ review_iterations в STATE.md не разобран («${clean(fm && fm.get('review_iterations'))}») — считаю лимит исчерпанным`);
     }
     grew = from !== 'reworking';
-    if (grew && iters + 1 > REVIEW_LIMIT) {
+    if (grew && n + 1 > REVIEW_LIMIT) {
       die([
-        `лимит итераций ревью исчерпан (${iters} из ${REVIEW_LIMIT}): дальше`,
+        `лимит итераций ревью исчерпан (${n} из ${REVIEW_LIMIT}): дальше`,
         '  node .claude/hooks/task.mjs status blocked, решает человек',
       ].join('\n'));
     }
-    iteration = grew ? iters + 1 : iters;
+    iteration = grew ? n + 1 : n;
+    counter = 'итерация ревью';
     if (grew) fields.review_iterations = String(iteration);
+  } else if (value === 'awaiting_approval') {
+    const n = iters(fm, 'audit_iterations');
+    if (n === null) {
+      die(`⚠ audit_iterations в STATE.md не разобран («${clean(fm && fm.get('audit_iterations'))}») — считаю лимит исчерпанным`);
+    }
+    grew = from !== 'awaiting_approval';
+    if (grew && n + 1 > AUDIT_LIMIT) {
+      die([
+        `лимит кругов аудита плана исчерпан (${n} из ${AUDIT_LIMIT}): дальше`,
+        '  node .claude/hooks/task.mjs status blocked, решает человек',
+      ].join('\n'));
+    }
+    iteration = grew ? n + 1 : n;
+    counter = 'подача плана на аудит';
+    if (grew) fields.audit_iterations = String(iteration);
   }
 
   const next = editFront(src, fields);
@@ -220,11 +305,24 @@ function cmdStatus(list) {
   if (grew) payload.iteration = String(iteration);   // ключ только на переходе — новых событий не заводим
   writeFileSync(file, next, 'utf8');
   pend('status_changed', id, payload);               // статус на диске — событие заслужено
-  journal(file, grew ? `статус → ${value} · итерация ревью ${iteration}` : `статус → ${value}`);
+  journal(file, grew ? `статус → ${value} · ${counter} ${iteration}` : `статус → ${value}`);
+  // Снятие взвода стоит ПОСЛЕ удавшейся записи и `pend(...)`, но ДО `emit(...)`: слово исхода
+  // едет в том же событии `status_changed`, новых имён событий не заводим (§0.2 контракта).
+  if (value === 'awaiting_acceptance') {
+    const g = disarmGate(id);
+    payload.gate = g.word;
+    payload.gate_was = g.was;
+    payload.gate_verify = g.verify;
+    if (g.word !== 'disarmed' && g.word !== 'none') {
+      say(`⚠ взвод НЕ снят — ${g.line}`);
+      journal(file, `взвод НЕ снят: ${g.word}`);
+    }
+  }
   emit('status_changed', id, payload);
+  const limit = value === 'reworking' ? REVIEW_LIMIT : AUDIT_LIMIT;
   say(iteration === null
     ? `${id}: статус ${value}`
-    : `${id}: статус ${value} · итерация ревью ${iteration} из ${REVIEW_LIMIT}`);
+    : `${id}: статус ${value} · ${counter} ${iteration} из ${limit}`);
 }
 
 /** Дописать строку в журнал активной задачи. Ручной инструмент — см. шапку файла. */
@@ -237,7 +335,13 @@ function cmdLog(list) {
   say(`${id}: записано в журнал`);
 }
 
-/** Закрыть задачу: статус done и пустой указатель. Испорченный ACTIVE — отказ, а не «починка». */
+/**
+ * Закрыть задачу: статус done и пустой указатель. Испорченный ACTIVE — отказ, а не «починка».
+ *
+ * Штатный вход сюда — из `awaiting_acceptance`: работа закончена, `DONE.md` написан, и человек
+ * принял результат. Требованием это не сделано намеренно: `close` остаётся способом закрыть
+ * задачу из любого состояния (передумали, задача отменена, память до 1.17 без нового статуса).
+ */
 function cmdClose() {
   const { id, dir } = requireActive();
   const file = path.join(dir, 'STATE.md');
@@ -278,7 +382,7 @@ function cmdClose() {
     if (g && clean(g.task_id) === id && gs && gs !== 'verified') {
       say(`⚠ гейт остался на задаче ${id}, состояние «${gs}» — приёмка не пройдена`);
       if (process.stdin.isTTY) {
-        say('  снять взвод может только человек: node .claude/hooks/gate.mjs --disarm');
+        say('  снимаете взвод здесь вы: node .claude/hooks/gate.mjs --disarm');
         say('  зелёный прогон приёмки снимает взвод сам');
       } else {
         say('  как снять — .claude/CUSTOMIZE.md, раздел «Машинная приёмка»');
@@ -312,7 +416,7 @@ function cmdList() {
       // Заголовок мог приехать миграцией из чужого markdown, поэтому чистим и на выводе тоже.
       title: clean(fm.get('title')) || '(без названия)',
       status: clean(fm.get('status')).slice(0, 20) || '?',
-      iters: reviewIters(fm),
+      iters: iters(fm, 'review_iterations'),
     });
   }
   if (!rows.length) { say('задач пока нет'); return; }
@@ -367,6 +471,135 @@ function cmdPath() {
   out(dir);
 }
 
+/**
+ * Класс риска задачи: `PLAN.md` → поле `class` в `STATE.md`. Аргументов нет вовсе — команда
+ * не несёт свободного текста и поэтому может лежать в `permissions.allow`.
+ *
+ * Итог = БОЛЬШИЙ из двух: объявленного планировщиком в разделе `## Класс риска` и машинного
+ * пола по путям, которые план трогает. Понизить объявленное значение планировщик не может —
+ * в этом весь смысл: самооценка страхуется полом.
+ *
+ * ЧТО СЧИТАЕТСЯ ОГРАЖДЁННЫМ БЛОКОМ. Маска — `fenceMask()` в `md-fence.mjs`, общая
+ * с проверкой именных ссылок на код; правила ниже — несущая деталь разбора. Открывающий
+ * токен — строка, где после НЕ БОЛЕЕ ТРЁХ ведущих пробелов идут три и более подряд символа
+ * ``` либо три и более `~`; остаток строки (info string) игнорируется. Закрывающий — строка
+ * с тем же символом, длиной НЕ МЕНЬШЕ открывающего, после не более трёх пробелов и без другого
+ * текста. Вложенности нет: пока блок открыт, всё, кроме подходящего закрывающего токена, —
+ * содержимое (поэтому ````markdown тройкой кавычек не закрывается). Фенс с отступом четыре
+ * пробела и больше ограждённым блоком НЕ считается, и направление ошибки выбрано осознанно:
+ * лишний разобранный текст поднимает пол и печатает замечание, а «умный» разбор отступов дал бы
+ * способ спрятать шаг отступом.
+ *
+ * ПОЧЕМУ РАЗБОР СВОЙ, а не `filesFromPlan()` из `map.mjs`. У карты и у пола разные цели: карта
+ * показывает человеку до двенадцати путей (`.slice(0, 12)` там законен), а пол обязан увидеть
+ * ВСЕ. Функции ссылаются друг на друга по имени в докблоках; расхождение форм плана ищется
+ * grep-ом по именам `analysePlan()` в `task.mjs` и `filesFromPlan()` в `map.mjs`.
+ *
+ * FAIL-CLOSED. Ноль распознанных путей → пол не ниже `standard`, и `cosmetic` не выдаётся
+ * НИКОГДА: непонятый план — это не безопасный план. Ноль путей И неразобранный объявленный
+ * класс → отказ кодом 3 до какой-либо записи, поле `class` остаётся `-`. Сюда же общее
+ * правило учёта: ЛЮБОЕ расхождение между увиденным и разобранным — замечание, а любое
+ * замечание поднимает пол до `standard`; путь, увиденный вне шага, поднимает пол до своего
+ * класса. Семь видов расхождений перечислены в докблоке `analysePlan`.
+ *
+ * Пути остаются СТРОКАМИ: ни `existsSync`, ни чтения, ни запуска — иначе `../` и управляющие
+ * символы из чужого текста получают смысл. Печать — через `clean()` и не более десяти строк.
+ *
+ * События в `events.jsonl` эта команда не пишет: класс — состояние, а не переход, а заводить
+ * имя события без пишущего кода запрещено §0.2 контракта.
+ */
+function cmdClass() {
+  const { id, dir } = requireActive();
+  const file = path.join(dir, 'PLAN.md');
+  const src = readOr(file, '');
+  if (!clean(src)) die(`в ${rel(file)} плана нет (файла нет или он пуст) — класс считать не по чему`);
+
+  const r = analysePlan(src);
+  const acl = aclPrefixes();
+  for (const line of acl.notes) say(`форма плана: ${line}`);
+
+  // Пол по путям. У каждого поднявшего запоминается ИМЯ сработавшего правила — без него
+  // строка «пол elevated» не проверяется и не оспаривается.
+  let floor = 'cosmetic';
+  const raised = [];
+  for (const p of r.paths) {
+    const hit = floorFor(p.path, acl.tokens);
+    if (hit.cls === 'cosmetic') continue;
+    raised.push({ where: `шаг ${clean(String(p.step))}`, path: p.path, ...hit });
+    floor = maxClass(floor, hit.cls);
+  }
+
+  const notes = r.notes.slice();
+  if (!r.paths.length) notes.push('путей не распознано ни одного — пол принудительно не ниже standard');
+  // Любое замечание формы поднимает пол: непонятый план косметическим не бывает.
+  if (notes.length) floor = maxClass(floor, 'standard');
+
+  // Седьмое расхождение из докблока `analysePlan`: путь, который разбор увидел, но к шагу
+  // не отнёс. Поднимает пол и становится замечанием, если его класс ВЫШЕ уже посчитанного, —
+  // ошибка разбора идёт в дорогую сторону, а не в дешёвую. Сравнение с полом, уже поднятым
+  // замечаниями, намеренно: пол, поднятый выше, второй раз тем же поводом не поднимается.
+  const outside = [];
+  for (const s of r.strays) {
+    const hit = floorFor(s.path, acl.tokens);
+    if (maxClass(floor, hit.cls) === floor) continue;
+    outside.push({ line: s.line, where: `строка ${s.line}, вне шага`, path: s.path, ...hit });
+  }
+  for (const s of outside) floor = maxClass(floor, s.cls);
+  if (outside.length) {
+    raised.push(...outside);
+    notes.push(`путей вне шагов, поднимающих пол: ${outside.length} (строки ${listCut(outside.map((s) => s.line))}) — разбор их увидел, но к шагу не отнёс`);
+  }
+
+  if (!r.paths.length && !r.declared) {
+    for (const line of notes) say(`форма плана: ${line}`);
+    die([
+      'в плане не разобрано ни одного пути и не разобран раздел «Класс риска» —',
+      `  класс не записан, поле class осталось прежним. Правит план ${rel(file)} планировщик`,
+    ].join('\n'));
+  }
+
+  const result = maxClass(r.declared || 'cosmetic', floor);
+
+  const next = editFront(readOr(path.join(dir, 'STATE.md'), ''), { class: result });
+  if (!next) die(`в ${rel(path.join(dir, 'STATE.md'))} нет front-matter — класс записать некуда, ничего не меняю`);
+  writeFileSync(path.join(dir, 'STATE.md'), next, 'utf8');
+  journal(path.join(dir, 'STATE.md'), `класс риска → ${result} (объявлено ${r.declared || 'нет'}, пол ${floor})`);
+
+  say(`${id}: класс ${result}`);
+  say(`объявлено: ${r.declared || 'не разобрано'} · пол по путям: ${floor} · итог: ${result}`);
+  say(`учтено путей: ${r.paths.length}`);
+  if (raised.length) {
+    say('пол подняли:');
+    for (const p of raised.slice(0, PRINT_MAX)) {
+      say(`  ${p.where}: ${clean(p.path)} → ${p.cls} (${p.rule})`);
+    }
+    if (raised.length > PRINT_MAX) say(`  и ещё ${raised.length - PRINT_MAX}`);
+  }
+  say(`форма плана: шагов ${r.steps.length}, с маркером ${r.withMarker}, путей ${r.paths.length}`);
+  for (const line of notes) say(`форма плана: ${line}`);
+  say(`форма плана: замечаний ${notes.length}`);
+}
+
+/**
+ * Тип вопроса человеку перед `[СТОП]`: `product` / `technical` / `security`, и ничего кроме.
+ * Ровно один аргумент из закрытого словаря — свободного текста подкоманда не несёт, поэтому
+ * её место в `permissions.allow`, а сам вопрос человеку задаёт оркестратор словами в чате.
+ */
+function cmdStop(list) {
+  if (list.length !== 1) die(`нужен ровно один тип: ${STOP_KINDS.join(', ')}`);
+  const kind = list[0];
+  if (!STOP_KINDS.includes(kind)) {
+    die(`не знаю тип стопа «${clean(kind)}»\nдопустимые: ${STOP_KINDS.join(', ')}`);
+  }
+  const { id, dir } = requireActive();
+  const file = path.join(dir, 'STATE.md');
+  const next = editFront(readOr(file, ''), { stop_kind: kind, updated: stamp() });
+  if (!next) die(`в ${rel(file)} нет front-matter — тип стопа записать некуда, ничего не меняю`);
+  writeFileSync(file, next, 'utf8');
+  journal(file, `стоп: ${kind}`);
+  say(`${id}: стоп типа ${kind}`);
+}
+
 function usage() {
   die([
     'подкоманды:',
@@ -376,7 +609,429 @@ function usage() {
     '  close              закрыть задачу и снять указатель',
     '  list               все задачи',
     '  path               абсолютный путь активной задачи',
+    '  class              класс риска по PLAN.md → поле class в STATE.md',
+    `  stop <тип>         тип вопроса человеку: ${STOP_KINDS.join(', ')}`,
   ].join('\n'));
+}
+
+// --- приёмка ----------------------------------------------------------------
+
+/**
+ * Вердикт из шапки `REVIEW.md` задачи. Читается тем же `frontMatter()`, что и `STATE.md`:
+ * блок обязан начинаться первой строкой файла, `verdict:` ниже закрывающего `---` управляющей
+ * логикой игнорируется. Нет файла, нет шапки, нет поля — пустая строка, и вызывающий отказывает.
+ *
+ * Задача с ревью, но без шапки (память до 1.15, ручная правка) в `awaiting_acceptance` не
+ * пройдёт, и это законный отказ: строка называет прочитанный вердикт, человек дописывает шапку
+ * либо закрывает задачу через `close`.
+ */
+function reviewVerdict(dir) {
+  const fm = frontMatter(readOr(path.join(dir, 'REVIEW.md'), ''));
+  return fm ? clean(fm.get('verdict')) : '';
+}
+
+/**
+ * Снять взвод гейта от имени задачи. Возвращает `{ word, was, verify, line }`, где `word` —
+ * слово из ЗАКРЫТОГО словаря: `disarmed`, `none`, `no_task_id`, `foreign`, `blocked`,
+ * `unverified`, `disarm_failed`.
+ *
+ * Отдельным процессом, а не импортом — ровно тем же приёмом, каким `emit()` зовёт
+ * `events.mjs`: статический импорт ESM нельзя обернуть в `try/catch`, и сломанный `gate.mjs`
+ * отнял бы у человека смену статуса. `permissions.allow` для этого не нужен: это не вызов
+ * инструмента `Bash`, а дочерний процесс Node. `gate.mjs --disarm` в `allow` не добавляется,
+ * и ключ `--if-task` этого не меняет.
+ *
+ * ДОКЛАД О ФАКТЕ, А НЕ О НАМЕРЕНИИ. Решение принимает `gate.mjs` (`modeDisarm`), здесь только
+ * называется исход:
+ *   • предчтение нужно ТОЛЬКО ради строки человеку и payload (`gate_was`, `gate_verify`):
+ *     после удаления файла их восстановить неоткуда. При расхождении верны код возврата
+ *     дочернего процесса и повторное чтение, а не предчтение;
+ *   • наличие взвода — по `existsSync`, а не по успеху разбора: `readGate()` возвращает `null`
+ *     и на отсутствующем файле, и на битом JSON, и доклад `none` про лежащий на диске взвод
+ *     был бы неправдой. Файл есть, а JSON не читается — это `disarm_failed`;
+ *   • после вызова состояние ПЕРЕЧИТЫВАЕТСЯ: файла нет → `disarmed`; файл на месте и код 3 →
+ *     слово выбирается по предчтению в ТОМ ЖЕ ПОРЯДКЕ, что проверки в `modeDisarm()`;
+ *     предчтение отказ не объясняет (состояние сменилось между чтениями) → `disarm_failed`;
+ *     файл на месте и код не 3 → `disarm_failed`.
+ */
+function disarmGate(id) {
+  const none = { word: 'none', was: '', verify: '', line: '' };
+  if (!existsSync(GATE_STATE)) return none;   // взвода нет — дочерний процесс не запускается
+
+  const pre = readGate();
+  const was = pre ? clean(pre.status) : '';
+  const verify = pre ? clean(pre.verify) : '';
+  const done = (word, line) => ({ word, was, verify, line });
+
+  let code = null;
+  try {
+    if (!existsSync(GATE_MJS)) return done('disarm_failed', `нет ${rel(GATE_MJS)} — снимать нечем`);
+    const r = spawnSync(process.execPath, [GATE_MJS, '--disarm', '--if-task', id], {
+      cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore',
+    });
+    code = r.status;
+  } catch (e) {
+    return done('disarm_failed', `не удалось запустить снятие взвода: ${e && e.message ? e.message : e}`);
+  }
+
+  if (!existsSync(GATE_STATE)) return { word: 'disarmed', was, verify, line: '' };
+
+  const hint = 'снимает человек из терминала: node .claude/hooks/gate.mjs --disarm';
+  if (code === 3) {
+    if (!pre) return done('disarm_failed', `состояние приёмки не читается (битый JSON) — ${hint}`);
+    const owner = clean(pre.task_id);
+    if (!owner) return done('no_task_id', `взвод ничей (task_id пуст) — ${hint}`);
+    if (owner !== id) return done('foreign', `взвод стоит на другой задаче (${owner}) — ${hint}`);
+    if (was === 'blocked') return done('blocked', `приёмка остановлена (blocked) — ${hint}`);
+    if (was !== 'verified' && verify !== 'none') {
+      return done('unverified', `приёмка не пройдена (статус ${was || 'нет'}, приёмка ${verify || 'нет'}, попыток ${clean(String(pre.attempts ?? '?'))}) — почини проверки или ${hint}`);
+    }
+    return done('disarm_failed', `состояние приёмки изменилось между чтениями — ${hint}`);
+  }
+  return done('disarm_failed', `снятие не удалось (код ${clean(String(code))}) — ${hint}`);
+}
+
+// --- класс риска ------------------------------------------------------------
+
+/**
+ * Разбор плана: шаги, пути, объявленный класс, замечания формы. Возвращает
+ * `{ paths, strays, steps, withMarker, declared, notes }` и НИЧЕГО не пишет.
+ *
+ * УЧЁТ РАЗБОРА: «увидено» против «разобрано». Правило общее В ПРЕДЕЛАХ ТОГО, ЧТО РАЗБОР
+ * ВИДИТ (граница видимости — отдельным разделом ниже, и она не гарантия, а принятый риск):
+ * всё, что разбор УВИДЕЛ, но не сумел отнести к шагу, обязано удорожать класс, а не
+ * удешевлять его. Предохранитель находили открытым трижды — обрезка `.slice(0, 12)`, шаги
+ * внутри ограждённых блоков, шаг без маркера вместе с путём на строке-продолжении, — поэтому
+ * здесь сравниваются СЧЁТЧИКИ, а не проверяется отдельно взятый способ спрятать путь.
+ * Расхождением считается каждое из семи:
+ *
+ *   1. строк, похожих на шаг, по всему файлу больше, чем разобрано (шаг внутри фенса);
+ *   2. разобранных шагов больше, чем шагов с маркером `_Файл:_` / `_Файлы:_`;
+ *   3. шагов с маркером больше, чем шагов, у которых после маркера нашёлся путь;
+ *   4. токен после маркера не проходит по печатаемому ASCII (омоглиф);
+ *   5. номера шагов не дают 1…N подряд — пропуск, повтор или номер вне диапазона;
+ *   6. ограждённый блок открыт и не закрыт — хвост файла не разобран;
+ *   7. путь разобран ВНЕ шага: на строке-продолжении, до маркера, в прозе или в хвосте
+ *      файла после последнего шага (поле `strays`).
+ *
+ * Первые шесть — замечания формы, и любое из них поднимает пол до `standard` (см. `cmdClass`).
+ * Седьмое считается там же и по своему правилу: путь вне шага поднимает пол, ЕСЛИ его класс
+ * выше уже посчитанного, и тогда же становится замечанием. Условие «выше» — не поблажка,
+ * а условие существования косметической ветки: план, честно трогающий только `.md`, называет
+ * свои же пути в прозе, и без условия `cosmetic` не выдавался бы никогда.
+ *
+ * ЧТО РАЗБОР ВИДИТ, А ЧЕГО НЕ ВИДИТ ВОВСЕ. Путь опознаётся только в ОГРАЖДЁННЫХ РАЗМЕТКОЙ
+ * формах, их две: токен в обратных кавычках и адрес markdown-ссылки `](путь)` — см.
+ * `delimited()` ниже. Обе разделены синтаксисом, а не догадкой, и потому разбираются
+ * одинаково: и в шаге, и вне шага. Всё остальное разбор НЕ ВИДИТ, и счётчики «увидено
+ * против разобрано» про это ничего не знают — голый путь в прозе (`Заодно правим
+ * db/migrations/009.sql` без кавычек), адрес ссылки-сноски вида `[метка]: путь`, `<a href>`,
+ * путь, разрезанный на два токена. ЭТО ПРИНЯТЫЙ РИСК, а не недосмотр: разбирать любой
+ * похожий на путь токен в свободном тексте — шум, а пол, срабатывающий на всём подряд,
+ * отключат руками. Цена риска называется прямо: план, который называет опасный файл ТОЛЬКО
+ * в невидимой форме, получит `cosmetic`, а с ним пропуск аудита и первого `[СТОП]`.
+ * Прикрыто это не разбором, а требованием формы в промте планировщика (`planner.md`)
+ * и тем, что класс планировщик объявляет сам.
+ *
+ * ЧЕГО ЗДЕСЬ НЕТ НАМЕРЕННО. «Хвост файла после последнего шага» сам по себе расхождением
+ * не считается: после шагов в плане законно идут «Что НЕ входит», «Риски», «Контрольные
+ * точки» и «Класс риска». Хвост закрыт пунктом 7 — опасный путь в нём поднимает пол и назван
+ * вслух. Не-ASCII токен ВНЕ шага замечанием тоже не считается: в прозе плана русский текст
+ * в обратных кавычках — норма, и правило утопило бы полезный сигнал в шуме.
+ *
+ * Про непрерывность номеров и про счётчик строк шагов — честно, без обещаний, которых
+ * механизм не даёт. Непрерывность 1…N ловит ПРОПУСК В СЕРЕДИНЕ и ПОВТОР. Обрезку с ХВОСТА
+ * она поймать не может математически: оставшиеся 1…N−k — такая же безупречная
+ * последовательность, и ограждённый блок, открытый после шага M и закрытый перед концом
+ * файла, унёс бы хвост молча. Поэтому рядом стоит второй, независимый от разбора фенсов
+ * счётчик: строки, похожие на шаг, считаются ПО ВСЕМУ ФАЙЛУ, включая ограждённые блоки,
+ * и сравниваются с числом разобранных. Расходятся — замечание. Инвариант законен, потому что
+ * форма плана требует не держать в примерах строк вида `- [ ] **N.**` (см. assets/stubs/PLAN.md).
+ * На намеренно искалеченную форму пол не рассчитан и рассчитан быть не может — это записано
+ * и в промте планировщика, и в разделе рисков плана фазы 5.
+ */
+function analysePlan(src) {
+  const lines = String(src).split(/\r?\n/);
+  const { inside, unclosedFrom } = fenceMask(lines);
+  const notes = [];
+  const paths = [];
+  const strays = [];
+  const steps = [];
+  const noPath = [];
+  const noMarker = [];
+  const nonAscii = [];
+  let withMarker = 0;
+  let allStepLines = 0;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const m = line.match(STEP_RE);
+    if (m) allStepLines += 1;          // считаем ВЕЗДЕ, включая фенсы: см. докблок
+    if (inside[i]) continue;
+    // Не шаг — по этой строке разбор путей не ведётся, значит всё найденное на ней идёт
+    // в `strays`. Так же поступаем с шагом без маркера и с началом строки шага до маркера:
+    // «не разобрано» обязано быть учтено отдельно, а не пропущено молча.
+    if (!m) { strayPaths(line, i + 1, strays); continue; }
+    const num = Number(m[1]);
+    steps.push(num);
+    const mark = line.match(MARK_RE);
+    if (!mark) { noMarker.push(num); strayPaths(line, i + 1, strays); continue; }
+    withMarker += 1;
+    const cut = mark.index + mark[0].length;
+    strayPaths(line.slice(0, cut), i + 1, strays);
+    let found = 0;
+    let bad = false;
+    for (const raw of delimited(line.slice(cut))) {
+      const tok = pathToken(raw);
+      if (tok.kind === 'nonascii') { bad = true; continue; }
+      if (tok.kind !== 'path') continue;
+      paths.push({ step: num, path: tok.value });
+      found += 1;
+    }
+    if (bad) nonAscii.push(num);
+    if (!found) noPath.push(num);
+  }
+
+  if (unclosedFrom !== null) {
+    notes.push(`хвост плана не разобран: незакрытый ограждённый блок со строки ${unclosedFrom}`);
+  }
+  // Числовой баланс разбора. Ровно эти числа печатает строка «форма плана: шагов N,
+  // с маркером M, путей K» — теперь они не только печатаются, но и решают: каждое
+  // расхождение становится замечанием, а замечание поднимает пол (см. `cmdClass`).
+  if (allStepLines !== steps.length) {
+    notes.push(`строк шагов в файле ${allStepLines}, разобрано ${steps.length} — часть шагов внутри ограждённых блоков`);
+  }
+  if (noMarker.length) {
+    notes.push(`шагов ${steps.length}, с маркером _Файл:_/_Файлы:_ ${withMarker} — без маркера: ${listCut(noMarker)}`);
+  }
+  const gaps = numbering(steps);
+  if (gaps) notes.push(gaps);
+  if (noPath.length) notes.push(`маркер есть, а пути не распознано у шагов: ${listCut(noPath)}`);
+  if (nonAscii.length) notes.push(`не-ASCII в токене пути у шагов: ${listCut(nonAscii)} — токен нераспознан`);
+
+  const declared = declaredClass(lines, inside, notes);
+  return { paths, strays, steps, withMarker, declared, notes };
+}
+
+/**
+ * Токены, ограждённые разметкой, — единственный вход разбора путей. Форм ровно две, и обе
+ * заданы синтаксисом, а не догадкой: содержимое обратных кавычек и адрес markdown-ссылки
+ * `](путь)`. Вторая добавлена потому, что «правим [права доступа](.claude/settings.json)» —
+ * форма, которую планировщик пишет естественно, а пол её не видел и выдавал `cosmetic`
+ * на плане, трогающем `settings.json`. Что за этими двумя формами разбор не видит вовсе —
+ * записано в докблоке `analysePlan()` разделом «ЧТО РАЗБОР ВИДИТ».
+ *
+ * Ошибка разбора здесь идёт в дорогую сторону: лишний увиденный путь поднимает пол
+ * и печатает замечание, пропущенный — молча удешевляет задачу.
+ */
+function delimited(text) {
+  const out = [];
+  for (const t of String(text).matchAll(/`([^`]*)`/g)) out.push(t[1]);
+  for (const t of String(text).matchAll(/\]\(([^)]*)\)/g)) {
+    const dest = linkTarget(t[1]);
+    if (dest) out.push(dest);
+  }
+  return out;
+}
+
+/**
+ * Адрес markdown-ссылки как кандидат в пути. Схема (`https:`, `mailto:`) и якорь (`#раздел`)
+ * путями не являются: без этого отсева ссылка на страницу с `.js` в адресе поднимала бы пол,
+ * а кириллический якорь читался бы как не-ASCII токен и давал замечание на ровном месте.
+ * Заголовок ссылки после пробела и угловые скобки — оформление, а не путь.
+ */
+function linkTarget(raw) {
+  let dest = String(raw).trim().split(/\s+/)[0];
+  if (dest.startsWith('<')) dest = dest.slice(1);
+  if (dest.endsWith('>')) dest = dest.slice(0, -1);
+  dest = dest.split('#')[0];
+  if (!dest || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(dest)) return '';
+  return dest;
+}
+
+/**
+ * Классификатор ограждённого разметкой токена — ОДИН на весь разбор: и для путей шага, и для
+ * учёта того, что разбор увидел вне шага, и для обеих форм ограждения (обратные кавычки,
+ * адрес markdown-ссылки). Общий классификатор здесь не украшение: «увидено» и «разобрано»
+ * сравнимы только тогда, когда считаны одной меркой.
+ *
+ * Обрамляющие пробелы снимаются: токен с ведущим пробелом глазом неотличим от обычного пути,
+ * а раньше уходил в «текст в кавычках», то есть был способом спрятать путь от пола. Пробел
+ * ВНУТРИ по-прежнему означает фразу, а не путь.
+ */
+function pathToken(raw) {
+  const tok = String(raw).trim();
+  if (!tok || /\s/.test(tok)) return { kind: 'text' };        // текст в кавычках, а не путь
+  if (!/^[\x20-\x7E]+$/.test(tok)) return { kind: 'nonascii' };
+  if (!tok.includes('/') && !tok.includes('.')) return { kind: 'text' };  // имя функции или слово
+  const value = tok.split('\\').join('/').replace(/^\.\//, '').replace(/\*+$/, '');
+  return value ? { kind: 'path', value } : { kind: 'text' };
+}
+
+/**
+ * Пути из текста, который разбор шага НЕ разбирал: строка-продолжение, начало строки шага
+ * до маркера, проза, хвост файла. Седьмое расхождение из докблока `analysePlan`; решение,
+ * что с ними делать, принимает `cmdClass`, здесь только сбор. Не-ASCII тут не отмечается —
+ * причина в том же докблоке.
+ */
+function strayPaths(text, lineNo, out) {
+  for (const raw of delimited(text)) {
+    const tok = pathToken(raw);
+    if (tok.kind === 'path') out.push({ line: lineNo, path: tok.value });
+  }
+}
+
+/** Список чисел с тем же потолком печати, что у путей: PRINT_MAX и «и ещё N». */
+function listCut(items) {
+  const head = items.slice(0, PRINT_MAX).join(', ');
+  return items.length > PRINT_MAX ? `${head} и ещё ${items.length - PRINT_MAX}` : head;
+}
+
+/**
+ * Номера разобранных шагов обязаны дать ровно 1, 2, … N — без пропусков и без повторов,
+ * и первый обязан быть 1. Проверка машинная и от аккуратности разбора не зависит: дырка
+ * в нумерации видна без всякого понимания текста. Что она НЕ ловит — обрезку с хвоста;
+ * это закрывает счётчик строк шагов в `analysePlan()`.
+ *
+ * ПОТОЛОК. Диапазон перебора задаёт ЧИСЛО РАЗОБРАННЫХ ШАГОВ, а не число, написанное в плане.
+ * Иначе шаг `**20000000.**` означал двадцать миллионов итераций и 189 МБ одной строкой
+ * в stdout хука (то есть прямо в контекст оркестратора), а `**900000000.**` — падение
+ * `Invalid array length`. Номер вне диапазона 1…N — сам по себе расхождение и печатается
+ * отдельным списком; печать каждого списка обрезается по `PRINT_MAX`, как печать путей.
+ * Это та же дисциплина потолков, что и в остальном разборе: чужой текст не управляет
+ * ни объёмом работы, ни объёмом вывода.
+ */
+function numbering(steps) {
+  if (!steps.length) return 'ни одной строки шага не разобрано';
+  const seen = new Set();
+  const dup = [];
+  for (const n of steps) {
+    if (seen.has(n)) dup.push(n);
+    seen.add(n);
+  }
+  const top = steps.length;
+  const miss = [];
+  for (let n = 1; n <= top; n += 1) if (!seen.has(n)) miss.push(n);
+  const over = [...seen].filter((n) => !(n >= 1 && n <= top)).sort((a, b) => a - b);
+  if (!dup.length && !miss.length && !over.length) return '';
+  const parts = [];
+  if (miss.length) parts.push(`пропущены ${listCut(miss)}`);
+  if (dup.length) parts.push(`повторены ${listCut(dup)}`);
+  if (over.length) parts.push(`вне диапазона ${listCut(over.map((n) => clean(String(n))))}`);
+  return `номера шагов идут не подряд 1…${top}: ${parts.join('; ')}`;
+}
+
+/**
+ * Объявленный класс: заголовок `## Класс риска` ЯКОРЕМ на начало строки и вне ограждённых
+ * блоков, по ВСЕМ вхождениям; в каждом — первый токен в обратных кавычках до следующего
+ * `## `. Принимается только одно из трёх слов, итог — максимум валидных.
+ *
+ * Умолчания `cosmetic` здесь нет и не будет ни при каких условиях: раздела нет или токен
+ * не из трёх — это замечание и отсутствие объявленного класса, а не «задача косметическая».
+ */
+function declaredClass(lines, inside, notes) {
+  let best = '';
+  let seen = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (inside[i] || !/^##\s+Класс риска\s*$/.test(lines[i])) continue;
+    seen += 1;
+    let token = '';
+    for (let j = i + 1; j < lines.length && !/^##\s/.test(lines[j]); j += 1) {
+      if (inside[j]) continue;
+      const t = lines[j].match(/`([^`]*)`/);
+      if (t) { token = t[1].trim(); break; }
+    }
+    if (CLASSES.includes(token)) best = maxClass(best || 'cosmetic', token);
+    else if (!token) notes.push('раздел «Класс риска» есть, но значения в нём нет — после заголовка нет ни одного токена в обратных кавычках');
+    else notes.push(`раздел «Класс риска» есть, но значение не разобрано («${clean(token)}»)`);
+  }
+  if (!seen) notes.push('раздела «Класс риска» в плане нет — объявленного класса не будет');
+  return best;
+}
+
+/**
+ * Правила пола по таблице §5.1 спецификации. Возвращает `{ cls, rule }`: класс и ИМЯ
+ * сработавшего правила — имя печатается рядом с путём, иначе строку «пол elevated» нечем
+ * ни проверить, ни оспорить.
+ *
+ * Порядок проверок — от предметных правил к правилу по §5 профиля: оба дают `elevated`,
+ * но предметное объясняет причину само по себе и не зависит от того, что человек написал
+ * в профиле.
+ */
+function floorFor(p, aclTokens) {
+  const low = p.toLowerCase();
+  const base = low.slice(low.lastIndexOf('/') + 1);
+  const ext = base.includes('.') ? base.slice(base.lastIndexOf('.')) : '';
+  if (/(^|\/)migrations?(\/|$)/.test(low) || base === '.env' || base.startsWith('.env.')
+    || base === 'settings.json' || ['.pem', '.key', '.crt'].includes(ext)) {
+    return { cls: 'elevated', rule: 'миграции, .env, settings.json, ключи и сертификаты' };
+  }
+  if (aclTokens.some((t) => low === t.value || (t.prefix && low.startsWith(t.prefix)))) {
+    return { cls: 'elevated', rule: 'путь из раздела «Права доступа» профиля' };
+  }
+  if (CODE_EXT.includes(ext)) return { cls: 'standard', rule: 'расширение кода' };
+  if (!ext) return { cls: 'standard', rule: 'путь без расширения' };
+  if (RISKY_WORDS.some((w) => low.includes(w))) return { cls: 'standard', rule: 'слово из списка (config, settings, auth, …)' };
+  if (DATA_EXT.includes(ext) && !TEST_DIR.test(low)) return { cls: 'standard', rule: 'данные и конфигурация вне каталога тестов' };
+  return { cls: 'cosmetic', rule: '' };
+}
+
+/**
+ * Пути из раздела «Права доступа» (`## 5.`) профиля проекта. Возвращает `{ tokens, notes }`.
+ *
+ * Токен режется по ПЕРВОМУ `*` и дальше работает префиксом: `.claude/tasks/**\/STATE.md`
+ * → `.claude/tasks/`. Префикс из ОДНОГО верхнего каталога (`.claude/`, `src/`) отбрасывается:
+ * по нему правило поднимало бы до `elevated` любой план, трогающий что угодно внутри набора,
+ * то есть гарантия срабатывала бы всегда и перестала бы что-либо значить.
+ *
+ * Профиля нет или раздел не найден — НЕ ошибка: строка в вывод, и пол считается по остальным
+ * правилам. Честно: в свежем проекте §5 шаблона — сплошные `TODO`, это правило там молчит,
+ * и вся нагрузка ложится на правила по расширениям.
+ *
+ * Токены печатаются через `clean()` и с той же обрезкой, что пути: они приходят из
+ * `PROJECT_PROFILE.md`, то есть из того же недоверенного текста, что и план.
+ */
+function aclPrefixes() {
+  const notes = [];
+  const tokens = [];
+  const src = readOr(PROFILE, '');
+  if (!src) {
+    notes.push('профиль проекта не прочитан — раздел «Права доступа» в поле зрения не попал');
+    return { tokens, notes };
+  }
+  const lines = src.split(/\r?\n/);
+  let from = -1;
+  for (let i = 0; i < lines.length; i += 1) if (/^##\s+5\./.test(lines[i])) { from = i; break; }
+  if (from === -1) {
+    notes.push('раздел «Права доступа» не найден — пол по нему не считался');
+    return { tokens, notes };
+  }
+  const dropped = [];
+  for (let i = from + 1; i < lines.length && !/^##\s/.test(lines[i]); i += 1) {
+    for (const t of lines[i].matchAll(/`([^`]*)`/g)) {
+      const tok = t[1];
+      if (!tok || /\s/.test(tok)) continue;
+      if (!tok.includes('/') && !tok.includes('.')) continue;
+      const value = tok.split('\\').join('/').toLowerCase();
+      const cut = value.indexOf('*');
+      const head = cut === -1 ? value : value.slice(0, cut);
+      if (!head) continue;
+      // Один верхний каталог: `.claude/`, `src/` — см. докблок. Правило действует и на токен
+      // со звёздочкой (`.claude/**`), и на голый (`.claude/`): опасен именно верхний каталог,
+      // а не форма записи.
+      if (head.endsWith('/') && !head.slice(0, -1).includes('/')) { dropped.push(head); continue; }
+      if (cut === -1) tokens.push({ value: head, prefix: '' });
+      else tokens.push({ value: '', prefix: head });
+    }
+  }
+  for (const d of dropped.slice(0, PRINT_MAX)) notes.push(`токен ${clean(d)} из §5 не учтён: один верхний каталог`);
+  if (dropped.length > PRINT_MAX) notes.push(`и ещё ${dropped.length - PRINT_MAX} токенов из §5 не учтено`);
+  return { tokens, notes };
+}
+
+/** Больший из двух классов по порядку cosmetic < standard < elevated. */
+function maxClass(a, b) {
+  return CLASSES.indexOf(a) >= CLASSES.indexOf(b) ? a : b;
 }
 
 // --- идентификаторы и пути --------------------------------------------------
@@ -457,6 +1112,11 @@ function fillState(src, id, title) {
     created: now,
     updated: now,
     review_iterations: '0',
+    // Класс риска ещё не считался: `-` читается всеми как `standard`, но никогда как
+    // `cosmetic` (см. врезку в assets/stubs/STATE.md). Считает его `task.mjs class`.
+    class: '-',
+    audit_iterations: '0',
+    stop_kind: '-',
     branch: gitBranch(),
   }) || src;
   // Строка-пример из эталона заменяется настоящей первой записью: журнал с выдуманной
@@ -490,14 +1150,19 @@ function frontMatter(src) {
 }
 
 /**
- * Сколько раз ревью уже возвращало задачу исполнителю. Ровно ТРИ исхода и ни одного больше:
- *   поля нет вовсе         → 0. Законный ноль: задача заведена копией набора до 1.15.0,
- *                            и `editFront` допишет поле при первом же переходе;
+ * Счётчик из front-matter: сколько раз ревью возвращало задачу исполнителю
+ * (`review_iterations`) или сколько раз план подавался на аудит (`audit_iterations`).
+ * Функция обслуживает ОБА поля — правила у них одни и те же, и разными они быть не должны.
+ *
+ * Ровно ТРИ исхода и ни одного больше:
+ *   поля нет вовсе         → 0. Законный ноль: задача заведена копией набора до 1.15.0
+ *                            (для `audit_iterations` — до 1.17.0), и `editFront` допишет поле
+ *                            при первом же переходе;
  *   целое и не меньше нуля → оно само;
  *   всё остальное          → null, «не разобрано», и вызывающий отказывает.
  *
  * Зажимать значение в ноль (`Math.max(0, …)`) здесь ЗАПРЕЩЕНО. Это единственная функция,
- * на которой держится лимит, и двух трактовок одного значения в ней быть не должно:
+ * на которой держатся оба лимита, и двух трактовок одного значения в ней быть не должно:
  * отрицательное обязано давать отказ, а не тихий ноль. `parseInt('-5')` даёт -5, сравнение
  * «меньше трёх» не наступило бы очень долго, а поле можно удалить `Bash`-ом — правила `deny`
  * закрывают по STATE.md только `Write`/`Edit`.
@@ -505,9 +1170,9 @@ function frontMatter(src) {
  * Пустая строка отсекается ОТДЕЛЬНО от нуля намеренно: `Number('')` — это 0, и пустое поле
  * иначе притворилось бы законным нулём, молча сбросив лимит.
  */
-function reviewIters(fm) {
-  if (!fm || !fm.has('review_iterations')) return 0;
-  const raw = clean(fm.get('review_iterations'));
+function iters(fm, field) {
+  if (!fm || !fm.has(field)) return 0;
+  const raw = clean(fm.get(field));
   if (raw === '') return null;
   const n = Number(raw);
   return (Number.isInteger(n) && n >= 0) ? n : null;
