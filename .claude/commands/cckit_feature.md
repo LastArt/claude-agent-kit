@@ -10,14 +10,22 @@ description: Запустить полный конвейер на задаче 
 ## Цепочка
 
 ```
-новая задача (task.mjs new) → explorer → planner → security-auditor → [СТОП: жду моего «ок» на план + аудит]
+новая задача (task.mjs new) → explorer → planner → task.mjs class →
+    class = cosmetic → аудит и первый [СТОП] пропускаются, сразу implementing
+    иначе            → task.mjs status awaiting_approval → security-auditor →
+                       вердикт из шапки SECURITY.md:
+                          approved          → [СТОП: жду моего «ок» на план + аудит]
+                          changes_requested → task.mjs status planning → planner
+                                              → снова awaiting_approval (до трёх подач)
+                          blocked / отказ команды → task.mjs status blocked → [СТОП]
         → implementer → reviewer → вердикт из шапки REVIEW.md:
-              approved          → [СТОП: жду моего «ок» на результат] → task.mjs close
+              approved          → пишу DONE.md → task.mjs status awaiting_acceptance
               changes_requested → task.mjs status reworking → implementer → reviewer (до трёх раз)
               blocked / отказ команды / вердикт не разобран → task.mjs status blocked → [СТОП]
 ```
 
-Подробности петли — `.claude/ORCHESTRATOR_PROMPT.md`, раздел «Петля доработки».
+Подробности петель — `.claude/ORCHESTRATOR_PROMPT.md`, разделы «Петля аудита плана»,
+«Петля доработки» и «Асинхронная приёмка».
 
 **Возврат на доработку идёт без моего участия**, максимум три раза. Вердикт читается из шапки
 `REVIEW.md` — первый блок `---`, начинающийся первой строкой файла. `task.mjs status reworking`
@@ -40,22 +48,33 @@ description: Запустить полный конвейер на задаче 
 node .claude/hooks/task.mjs new "<очищенный заголовок>"
 ```
 
-Команда напечатает id и абсолютный путь к папке задачи — там появятся `STATE.md`, `PLAN.md`,
-`SECURITY.md` и `REVIEW.md`. **Запомни этот путь и передавай его каждому агенту в тексте
+Команда напечатает id и абсолютный путь к папке задачи — там появятся пять форм: `STATE.md`,
+`PLAN.md`, `SECURITY.md`, `REVIEW.md` и `DONE.md`. **Запомни этот путь и передавай его каждому агенту в тексте
 вызова**: у `planner`, `security-auditor`, `explorer`, `documenter` и `faq-writer` нет Bash,
 сами они его не добудут. Забыл — путь всегда даёт `node .claude/hooks/task.mjs path`.
 Статусы переключай ты, на границах шагов: `node .claude/hooks/task.mjs status <статус>`.
 
-**После `planner`, до `[СТОП]`** запусти `security-auditor` — он оценит план на безопасность
-и напишет `SECURITY.md`. На стопе покажи мне план вместе с находками аудита. Нашлись 🔴/🟡 —
-верни план `planner`'у на доработку, а не запускай `implementer`. Задача чисто косметическая
-(текст/стиль без нового ввода, прав и данных) — аудит можно пропустить.
+**После `planner` посчитай класс:** `node .claude/hooks/task.mjs class`. Класс считает команда,
+и решение принимается по нему, а не «на глаз»: `cosmetic` в поле `class` файла `STATE.md` —
+аудит и первый `[СТОП]` пропускаются; любое другое значение, включая `-` и отказ команды кодом 3,
+косметическим не считается. Любое замечание формы плана (итоговая строка
+`форма плана: замечаний N` при N > 0) возвращает план `planner`'у.
 
-Если это завершённая **пользовательская** функция и я подтвердил результат — затем `documenter`,
-после него `faq-writer`.
+**Дальше, до `[СТОП]`,** — `task.mjs status awaiting_approval` (эта команда считает круг аудита,
+их три) и `security-auditor`: он оценит план на безопасность и напишет `SECURITY.md` с шапкой
+`verdict`. На стопе покажи мне план вместе с находками аудита. `verdict: changes_requested` —
+верни план **`planner`'у** (не исполнителю: кода ещё нет), а не запускай `implementer`.
 
-**Когда я подтвердил результат и цепочка закончилась** — закрой задачу:
-`node .claude/hooks/task.mjs close`. Он поставит статус `done` и очистит указатель активной
+**Вердикт ревью `approved`** — напиши `DONE.md` по форме `.claude/assets/stubs/DONE.md` и
+переведи задачу: `node .claude/hooks/task.mjs status awaiting_acceptance`. Переход разрешён
+**только** из `reviewing` и **только** при `approved`; команда сама снимает взвод гейта и сама
+скажет, если снять его не смогла. Затем одной строкой сообщи мне, где лежит файл, и цепочку
+заверши.
+
+Если это завершённая **пользовательская** функция — затем `documenter`, после него `faq-writer`.
+
+**Задачу закрываю не ты, а я — своим ответом.** Получив его, выполни
+`node .claude/hooks/task.mjs close`: он поставит статус `done` и очистит указатель активной
 задачи, чтобы следующая цепочка начиналась с чистого листа.
 
 ## Правила
