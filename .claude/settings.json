@@ -1,6 +1,6 @@
 {
   "permissions": {
-    "allow": [
+      "allow": [
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
@@ -42,6 +42,11 @@
       "Bash(node .claude/hooks/task.mjs status reworking)",
       "Bash(node .claude/hooks/task.mjs status done)",
       "Bash(node .claude/hooks/task.mjs status blocked)",
+      "Bash(node .claude/hooks/task.mjs class)",
+      "Bash(node .claude/hooks/task.mjs status awaiting_acceptance)",
+      "Bash(node .claude/hooks/task.mjs stop product)",
+      "Bash(node .claude/hooks/task.mjs stop technical)",
+      "Bash(node .claude/hooks/task.mjs stop security)",
       "Bash(node .claude/hooks/session.mjs --selftest)",
       "Bash(node .claude/hooks/events.mjs --selftest)"
     ],
