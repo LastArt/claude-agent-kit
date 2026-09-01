@@ -14,3 +14,14 @@
 *.png binary
 *.ico binary
 *.jpg binary
+
+# Готовые сборки страницы пульта приезжают в репозиторий как есть (фаза 2, шаг 18).
+# Корневое правило `* text=auto eol=lf` иначе рискует переписать шрифт значков редактора
+# и картинки: сборку это ломает молча, а увидят её уже в браузере.
+*.ttf binary
+*.woff binary
+*.woff2 binary
+*.otf binary
+*.eot binary
+*.gif binary
+*.webp binary
