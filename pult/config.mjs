@@ -286,7 +286,13 @@ export const CSP = [
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
-  "font-src 'self'",
+  // `data:` ЗДЕСЬ НЕСУЩИЙ, а не «на всякий случай». В поставке `monaco-editor@0.56.0`
+  // (`min/vs`) отдельного файла шрифта значков нет вовсе: он встроен в
+  // `vs/editor/editor.main.css` одним правилом `@font-face` с адресом `url(data:font/ttf;
+  // base64,…)`, а ссылок вида `url(...ttf)` в файле ноль (проверено на привезённых файлах).
+  // Под `font-src 'self'` браузер такой шрифт блокирует, и значки редактора пропадают —
+  // с нарушением политики в консоли и пустыми местами на странице.
+  "font-src 'self' data:",
   "worker-src 'self' blob:",
   "connect-src 'self'",
   "object-src 'none'",

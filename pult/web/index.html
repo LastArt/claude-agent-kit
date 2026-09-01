@@ -2,18 +2,187 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Пульт — Claude Agent Kit</title>
+
+  <!--
+    НИ ОДНОЙ ССЫЛКИ НАРУЖУ: ни шрифтов, ни скриптов, ни аналитики. Всё, что грузит эта
+    страница, лежит в `pult/web` и отдаётся тем же демоном. Проверяется это вкладкой сети
+    в отладчике: за пределы 127.0.0.1:7331 не уходит ни одного запроса.
+
+    НИ ОДНОГО ВСТРОЕННОГО СКРИПТА И НИ ОДНОГО ОБРАБОТЧИКА СОБЫТИЯ В РАЗМЕТКЕ. Это не стиль,
+    а следствие политики содержимого (`CSP` в `pult/config.mjs`): у `script-src` нет
+    `'unsafe-inline'`, поэтому `<script>…</script>` и `onclick="…"` браузер просто
+    не выполнит. Обработчики вешают модули страницы.
+
+    Разметка ПУСТАЯ: данные вставляют модули `app.mjs`, `terminal.mjs`, `tree.mjs`,
+    `editor.mjs` и `diff.mjs` — только через `textContent` и `createElement`.
+  -->
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="vendor/xterm/xterm.css">
 </head>
 <body>
-  <h1>Пульт: рабочее место</h1>
-  <p>
-    Заглушка страницы. Каркас в три колонки, стили и модули страницы приходят шагами 19-25
-    плана фазы 2; здесь пока только доказательство того, что демон отдаёт документ своим
-    путём ответа — со своим типом, политикой содержимого и запретом обрамления.
-  </p>
-  <p>
-    Встроенных скриптов и обработчиков событий в разметке нет и не будет: политика
-    содержимого запрещает их намеренно.
-  </p>
+
+<!-- Полоса состояния сверху: демон, проект, версия набора, отпечаток, приёмка. -->
+<header class="statusbar" id="statusbar">
+  <span class="brand">CCKIT</span>
+  <span class="status-item"><span class="dot" id="daemon-dot"></span><span id="daemon-text">демон: проверяю…</span></span>
+  <span class="status-sep"></span>
+  <span class="status-item" id="status-project">проект не выбран</span>
+  <span class="status-item mono" id="status-version">—</span>
+  <span class="status-item" id="status-fingerprint">отпечаток: —</span>
+  <span class="status-item" id="status-task">задача: —</span>
+  <span class="spacer"></span>
+  <button type="button" class="btn btn-quiet" id="btn-refresh">Обновить</button>
+</header>
+
+<main class="columns" id="columns">
+
+  <!-- ЛЕВАЯ КОЛОНКА: проекты реестра и карточка выбранного проекта. -->
+  <aside class="col col-left">
+    <div class="col-head">
+      <h2>Проекты</h2>
+      <span class="pill" id="projects-count">0</span>
+    </div>
+    <div class="col-body">
+      <ul class="projects" id="projects-list"></ul>
+      <section class="card" id="project-card" hidden>
+        <h3 id="card-name">—</h3>
+        <p class="mono muted" id="card-path"></p>
+        <div class="card-row">
+          <span class="mono" id="card-version">—</span>
+          <span class="badge" id="card-verdict">отпечаток: —</span>
+          <button type="button" class="btn btn-quiet" id="btn-verify-fingerprint">Сверить с эталоном</button>
+        </div>
+        <p class="muted small" id="card-diverged"></p>
+        <h4>Задачи</h4>
+        <ul class="tasks" id="card-tasks"></ul>
+        <div class="task-detail" id="task-detail" hidden>
+          <h4 id="task-title">—</h4>
+          <p class="small muted" id="task-meta"></p>
+          <div class="task-files" id="task-files"></div>
+          <h5>Журнал задачи</h5>
+          <ul class="log" id="task-log"></ul>
+        </div>
+        <p class="faults small" id="card-faults"></p>
+      </section>
+    </div>
+  </aside>
+
+  <!-- ЦЕНТР: работа агента. Одно место, три режима — терминал, редактор, диффы. -->
+  <section class="col col-center">
+    <div class="tabs" id="center-tabs">
+      <button type="button" class="tab is-active" id="tab-terminal" data-pane="terminal">Терминал</button>
+      <button type="button" class="tab" id="tab-editor" data-pane="editor">Редактор</button>
+      <button type="button" class="tab" id="tab-diff" data-pane="diff">Диффы</button>
+      <span class="spacer"></span>
+      <label class="field">
+        <span class="small muted">сессия</span>
+        <select id="session-kind">
+          <option value="shell">оболочка</option>
+          <option value="claude">Claude Code</option>
+        </select>
+      </label>
+      <button type="button" class="btn" id="btn-session">Подключить</button>
+    </div>
+
+    <div class="panes">
+      <div class="pane pane-terminal" id="pane-terminal">
+        <div class="terminal-bar">
+          <span class="dot" id="terminal-dot"></span>
+          <span class="small" id="terminal-status">сессия не подключена</span>
+        </div>
+        <div class="terminal-host" id="terminal-host"></div>
+      </div>
+
+      <div class="pane pane-editor" id="pane-editor" hidden>
+        <div class="editor-bar">
+          <span class="mono" id="editor-path">файл не открыт</span>
+          <!--
+            Отметка несохранённых правок. Текст свой, а не пришедший от демона, поэтому он
+            стоит прямо в разметке; показывает и прячет её `setDirty()` в `editor.mjs`.
+          -->
+          <span class="badge is-warn" id="editor-dirty" hidden>не сохранено</span>
+          <span class="badge" id="editor-flags"></span>
+          <span class="spacer"></span>
+          <button type="button" class="btn" id="btn-save" disabled title="Записать правку на диск. Включается правкой: на нетронутом файле сохранять нечего">Сохранить</button>
+          <button type="button" class="btn btn-quiet" id="btn-reload" disabled title="Перечитать файл с диска — подтянуть чужую версию. Несохранённые правки при этом теряются, о них спросят">Перечитать</button>
+        </div>
+        <p class="notice" id="editor-notice" hidden></p>
+        <div class="editor-host" id="editor-host"></div>
+      </div>
+
+      <div class="pane pane-diff" id="pane-diff" hidden>
+        <div class="diff-bar">
+          <span id="diff-summary">дифф не загружен</span>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-quiet" id="btn-diff-mode">Показать лентой</button>
+          <button type="button" class="btn btn-quiet" id="btn-diff-reload">Обновить</button>
+        </div>
+        <div class="diff-body">
+          <ul class="diff-files" id="diff-files"></ul>
+          <div class="diff-host" id="diff-host"></div>
+        </div>
+      </div>
+    </div>
+
+    <!--
+      ПОЛОСА ГЕЙТА — ТРИ ФАКТА И ТОЛЬКО ОНИ: взведён или нет, приёмка зелёная или нет,
+      сколько попыток. Лента событий сюда не переезжает никогда — она в карточке задачи.
+    -->
+    <div class="gatebar" id="gatebar">
+      <span class="gate-item"><span class="dot" id="gate-armed-dot"></span><span id="gate-armed">гейт: —</span></span>
+      <span class="gate-item"><span class="dot" id="gate-verify-dot"></span><span id="gate-verify">приёмка: —</span></span>
+      <span class="gate-item" id="gate-attempts">попыток: —</span>
+      <span class="spacer"></span>
+    </div>
+  </section>
+
+  <!-- ПРАВАЯ КОЛОНКА: дерево файлов проекта, сворачиваемая. -->
+  <aside class="col col-right" id="col-right">
+    <div class="col-head">
+      <h2>Файлы проекта</h2>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-quiet" id="btn-tree-reload">Обновить</button>
+      <button type="button" class="btn btn-quiet" id="btn-tree-collapse" title="Свернуть колонку">→|</button>
+    </div>
+    <div class="col-body">
+      <p class="small muted" id="tree-note"></p>
+      <ul class="tree" id="tree-root"></ul>
+    </div>
+  </aside>
+
+</main>
+
+<!--
+  ПОРЯДОК ПОДКЛЮЧЕНИЯ ЗНАЧИМ, и переставлять его нельзя.
+
+  `xterm.js` и `addon-fit.js` — сборки UMD: увидев глобальный `define` с признаком AMD,
+  они регистрируются анонимным модулем AMD и глобальных имён НЕ заводят. Загрузчик
+  `vendor/monaco/vs/loader.js` именно такой `define` и создаёт. Поэтому терминал
+  подключается ПЕРВЫМ, до загрузчика, — тогда его сборка уходит в ветку «глобальные имена»
+  и `Terminal` с `FitAddon` появляются на `window`, как их и ждёт `terminal.mjs`.
+
+  Модуль страницы стоит последним и грузится как модуль: он отложенный по определению
+  и выполнится после того, как обе обычные сборки уже отработали.
+
+  ПОРЯДОК ПРОВЕРЯЕТСЯ МАШИННО, А НЕ ГЛАЗАМИ — это единственное место, где перестановка двух
+  строк тихо ломает терминал, а отказ мягкий («сборка терминала не загрузилась»), то есть
+  глазами его легко не заметить. Проверка из двух половин, и обе умеют провалиться:
+
+    grep -c 'define.amd' pult/web/vendor/xterm/xterm.js pult/web/vendor/xterm/addon-fit.js
+    awk '/vendor\/xterm\/xterm\.js"/{x=NR} /vendor\/xterm\/addon-fit\.js"/{f=NR} \
+         /vendor\/monaco\/vs\/loader\.js"/{l=NR} END{exit !(x && f && l && x<l && f<l)}' \
+        pult/web/index.html
+
+  Первая показывает, что ветка UMD в обеих сборках выбирается по `define.amd`; вторая даёт
+  ненулевой код, если терминал оказался ПОСЛЕ загрузчика.
+-->
+<script src="vendor/xterm/xterm.js"></script>
+<script src="vendor/xterm/addon-fit.js"></script>
+<script src="vendor/monaco/vs/loader.js"></script>
+<script type="module" src="app.mjs"></script>
+
 </body>
 </html>

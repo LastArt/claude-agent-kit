@@ -1,0 +1,475 @@
+/*
+ * Стили страницы пульта: тёмная схема по разделу 8 макета, сетка трёх колонок.
+ *
+ * ВНЕШНИХ ШРИФТОВ НЕТ И НЕ БУДЕТ. Страница обязана работать без сети (демон слушает только
+ * петлю), поэтому здесь только системные семейства и системный моноширинный. Barlow
+ * из макета сюда не тянется: он потребовал бы либо запроса наружу, либо ещё одной сборки
+ * в репозитории — цена, которой макет не стоит.
+ *
+ * ПРОКРУТКА — У КОЛОНОК, А НЕ У ОКНА. `body` фиксирован по высоте окна, прокручиваются
+ * только `.col-body`, полотно терминала и редактор: иначе полоса гейта и полоса состояния
+ * уезжают из виду ровно тогда, когда они нужны.
+ *
+ * Правая колонка сворачивается сменой одного значения `grid-template-columns` — ширина
+ * колонок живёт в одном месте, а не в трёх правилах.
+ */
+
+:root {
+  /* Фоны */
+  --bg-window: #16181a;
+  --bg-panel: #1a1d1f;
+  --bg-chrome: #1b1e21;
+  --bg-pop: #22262a;
+  --bg-canvas: #101214;
+  --bg-code: #131517;
+
+  /* Текст */
+  --fg: #dfe2e4;
+  --fg-muted: rgba(223, 226, 228, .45);
+  --fg-faint: rgba(223, 226, 228, .32);
+
+  /* Рамки */
+  --line: rgba(223, 226, 228, .09);
+  --line-soft: rgba(223, 226, 228, .05);
+
+  /* Акцент */
+  --accent: #5980a6;
+  --accent-hover: #749dc4;
+  --accent-fg: #94bce3;
+  --accent-soft: rgba(148, 188, 227, .14);
+
+  /* Состояния */
+  --ok: #5aae6a;
+  --ok-fg: #8ecf9b;
+  --warn: #dfa64a;
+  --alarm: #d08b72;
+  --alarm-fg: #e0a892;
+  --alarm-soft: rgba(208, 139, 114, .12);
+
+  /* Радиусы и тени */
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-pill: 99px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3);
+
+  /* Типографика */
+  --font: system-ui, "Segoe UI", Roboto, Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "Consolas", "Menlo", monospace;
+
+  /* Сетка колонок */
+  --col-left: 320px;
+  --col-right: 340px;
+}
+
+* { box-sizing: border-box; }
+
+/*
+ * СБРОС СКРЫТИЯ — НЕСУЩЕЕ ПРАВИЛО, А НЕ КОСМЕТИКА, И `!important` ЗДЕСЬ ОБЯЗАТЕЛЕН.
+ *
+ * На атрибуте `hidden` держится всё переключение центра (`showPane()` в `app.mjs`), полоса
+ * предупреждения редактора (`showNotice()` в `editor.mjs`) и сворачивание веток дерева
+ * (`row()` в `tree.mjs`). Правило `[hidden] { display: none }` живёт в таблице стилей
+ * БРАУЗЕРА, а любое авторское `display` ниже — у `.pane`, `.notice`, `.tree ul` — его
+ * перебивает: в каскаде сначала сравниваются источники стиля, и специфичность между разными
+ * источниками не считается вовсе. Без этой строки вкладки «Редактор» и «Диффы» переключают
+ * только подсветку, полоса предупреждения видна всегда, а раскрытый каталог не сворачивается.
+ *
+ * Проверяется машинно: `[hidden]` в этом файле обязан быть (`grep`), а на странице у скрытого
+ * узла обязан быть `display: none` и нулевая высота — это снимается вычисленным стилем
+ * в headless-браузере.
+ */
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-window);
+  color: var(--fg);
+  font: 400 13.5px/1.45 var(--font);
+  display: grid;
+  grid-template-rows: 34px 1fr;
+}
+
+h2, h3, h4, h5 { margin: 0; font-weight: 600; }
+h2 { font-size: 15px; letter-spacing: .01em; }
+h3 { font-size: 17px; }
+h4 { font-size: 14px; margin-top: 14px; }
+h5 { font-size: 12.5px; margin-top: 12px; color: var(--fg-muted); }
+p { margin: 6px 0; }
+ul { margin: 0; padding: 0; list-style: none; }
+
+.mono { font-family: var(--mono); font-size: 12px; }
+.small { font-size: 12px; }
+.muted { color: var(--fg-muted); }
+.spacer { flex: 1 1 auto; }
+
+/* --- полоса состояния ------------------------------------------------------ */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.brand {
+  font-weight: 600;
+  letter-spacing: .14em;
+  font-size: 12.5px;
+  color: var(--accent-fg);
+}
+
+.status-item { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-muted); }
+.status-item.is-strong { color: var(--fg); }
+.status-sep { width: 1px; height: 16px; background: var(--line); }
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--fg-faint);
+  flex: 0 0 auto;
+}
+.dot.is-ok { background: var(--ok); }
+.dot.is-warn { background: var(--warn); }
+.dot.is-alarm { background: var(--alarm); }
+
+/* --- сетка колонок --------------------------------------------------------- */
+
+.columns {
+  display: grid;
+  grid-template-columns: var(--col-left) minmax(0, 1fr) var(--col-right);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.columns.is-right-collapsed { grid-template-columns: var(--col-left) minmax(0, 1fr) 42px; }
+.columns.is-right-collapsed .col-right .col-body,
+.columns.is-right-collapsed .col-right h2,
+.columns.is-right-collapsed .col-right #btn-tree-reload { display: none; }
+
+.col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+.col-left { border-right: 1px solid var(--line); }
+.col-right { border-left: 1px solid var(--line); background: var(--bg-panel); }
+.col-center { background: var(--bg-window); }
+
+.col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-chrome);
+}
+
+.col-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px 24px;
+}
+
+/* --- кнопки, поля, значки -------------------------------------------------- */
+
+.btn {
+  font: 600 12.5px/1 var(--font);
+  color: #101214;
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.btn:hover:not(:disabled) { background: var(--accent-hover); }
+.btn:disabled { opacity: .45; cursor: default; }
+
+.btn-quiet {
+  color: var(--fg);
+  background: transparent;
+  border-color: var(--line);
+}
+.btn-quiet:hover:not(:disabled) { background: var(--accent-soft); border-color: transparent; }
+
+select {
+  font: 400 12.5px/1 var(--font);
+  color: var(--fg);
+  background: var(--bg-pop);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 5px 6px;
+}
+
+.field { display: inline-flex; align-items: center; gap: 6px; }
+
+.pill {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 1px 8px;
+}
+
+.badge {
+  font-size: 11.5px;
+  border-radius: var(--r-pill);
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  color: var(--fg-muted);
+}
+.badge.is-ok { color: var(--ok-fg); border-color: rgba(90, 174, 106, .35); }
+.badge.is-warn { color: var(--warn); border-color: rgba(223, 166, 74, .35); }
+.badge.is-alarm { color: var(--alarm-fg); border-color: rgba(208, 139, 114, .35); }
+
+/* --- левая колонка: проекты и карточка ------------------------------------- */
+
+.projects { display: flex; flex-direction: column; gap: 4px; }
+
+.project {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.project:hover { background: rgba(223, 226, 228, .06); }
+.project.is-active { background: var(--accent-soft); border-color: rgba(148, 188, 227, .18); }
+.project .name { font-weight: 600; font-size: 13.5px; }
+.project .ver { font-family: var(--mono); font-size: 10.5px; color: var(--fg-muted); }
+
+.card {
+  margin-top: 14px;
+  padding: 12px;
+  background: var(--bg-chrome);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+}
+.card-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+
+.tasks { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+.task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.task:hover { background: rgba(223, 226, 228, .06); }
+.task.is-active { background: var(--accent-soft); }
+.task .task-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task .status { font-size: 11px; color: var(--fg-muted); font-family: var(--mono); }
+
+.task-detail { margin-top: 10px; border-top: 1px solid var(--line-soft); padding-top: 8px; }
+.task-files { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+
+.log { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.log li { font-size: 12px; color: var(--fg-muted); display: flex; gap: 8px; }
+.log .t { font-family: var(--mono); font-size: 11px; color: var(--fg-faint); flex: 0 0 auto; }
+
+.faults { color: var(--alarm-fg); }
+
+/* --- центр: вкладки, полотна, полоса гейта --------------------------------- */
+
+.col-center { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  font: 600 13px/1 var(--font);
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.tab:hover { background: rgba(223, 226, 228, .06); color: var(--fg); }
+.tab.is-active { background: var(--accent-soft); color: var(--accent-fg); }
+
+.panes { min-height: 0; overflow: hidden; }
+.pane { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+
+.project .grow { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--fg-muted);
+}
+
+.terminal-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg-canvas);
+  padding: 6px 8px;
+  overflow: hidden;
+}
+
+.editor-bar, .diff-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-panel);
+}
+
+/*
+ * ДВА СОСЕДНИХ НА ВИД УЗЛА — РАЗНЫЕ ПРАВИЛА, И ЭТО НЕ НЕДОСМОТР.
+ *
+ * `.editor-host` — прямой потомок `.pane`, а тот flex-колонка: высоту полотну редактора
+ * даёт `flex: 1 1 auto`. `.diff-host` лежит в `.diff-body`, а это ГРИД, и `flex` у элемента
+ * грида не делает НИЧЕГО. Пока оба узла стояли в одном селекторе, половина свойств у второго
+ * была обещанием, которого нет: читатель видел `flex` и думал, что высота держится на нём.
+ * Высоту `.diff-host` даёт строка грида — см. `.diff-body` ниже.
+ */
+.editor-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg-canvas);
+}
+
+.diff-host {
+  min-height: 0;
+  background: var(--bg-canvas);
+}
+
+.notice {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--alarm-soft);
+  border-bottom: 1px solid rgba(208, 139, 114, .25);
+  color: var(--alarm-fg);
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/*
+ * СТРОКА ГРИДА ЗАДАНА ЯВНО — СТРАХОВКА, А НЕ ЛЕЧЕНИЕ.
+ *
+ * Без неё единственная (неявная) строка получает `auto`, и высота полотна держится на
+ * умолчании `align-content: normal`, которое ведёт себя как `stretch` и растягивает
+ * auto-строку на всю высоту контейнера. Умолчание рабочее: замер на живой странице даёт
+ * `.diff-host` 601 px при 601 px доступных И БЕЗ этой строки. Но держится оно на том, что
+ * `align-content` в этом файле никто не задал, — а это условие живёт ровно до первой правки.
+ *
+ * Чего эта строка НЕ лечит: «полотно почти нулевой высоты». Там нулевой высоты не полотно,
+ * а редактор сравнения ВНУТРИ него, и болезнь живёт в `layout()` (`pult/web/diff.mjs`),
+ * а не в этом файле. Мерить одну высоту `#diff-host` для той находки бесполезно: она зелёная
+ * и на больной странице.
+ */
+.diff-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.diff-files {
+  overflow: auto;
+  border-right: 1px solid var(--line-soft);
+  padding: 6px;
+  background: var(--bg-panel);
+}
+.diff-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.diff-file:hover { background: rgba(223, 226, 228, .06); }
+.diff-file.is-active { background: var(--accent-soft); }
+.diff-file .path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; }
+.diff-file .plus { color: var(--ok-fg); font-family: var(--mono); font-size: 11px; }
+.diff-file .minus { color: var(--alarm-fg); font-family: var(--mono); font-size: 11px; }
+
+.gatebar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 12px;
+  background: var(--bg-chrome);
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.gate-item { display: inline-flex; align-items: center; gap: 6px; }
+
+/* --- правая колонка: дерево ------------------------------------------------ */
+
+.tree { display: flex; flex-direction: column; gap: 1px; }
+.tree ul { padding-left: 14px; display: flex; flex-direction: column; gap: 1px; }
+
+.node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.node:hover { background: rgba(223, 226, 228, .06); }
+.node.is-open-file { background: var(--accent-soft); }
+.node .glyph { font-family: var(--mono); font-size: 11px; color: var(--fg-faint); width: 12px; flex: 0 0 auto; }
+.node .label { overflow: hidden; text-overflow: ellipsis; }
+.node.is-ignored .label { color: var(--fg-faint); }
+.node.is-changed .label { color: var(--warn); }
+.node.is-new .label { color: var(--ok-fg); }
+.node .tag {
+  font-size: 10.5px;
+  border-radius: var(--r-pill);
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+}
+.node .tag.is-secret { color: var(--alarm-fg); border-color: rgba(208, 139, 114, .35); }
+
+/* --- терминал: полотно xterm ----------------------------------------------- */
+
+.terminal-host .xterm { height: 100%; }
+.terminal-host .xterm-viewport { background-color: var(--bg-canvas) !important; }
