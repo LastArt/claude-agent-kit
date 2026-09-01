@@ -11,7 +11,8 @@
     "start": "node server.mjs",
     "parity": "node tools/fingerprint-parity.mjs",
     "nowrite": "node tools/no-write-check.mjs",
-    "writescope": "node tools/write-scope-check.mjs"
+    "writescope": "node tools/write-scope-check.mjs",
+    "pagecheck": "node tools/page-check.mjs"
   },
   "dependencies": {
     "node-pty": "1.1.0",
