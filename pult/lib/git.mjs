@@ -298,19 +298,36 @@ function secretPathspecs() {
 
 /**
  * Список изменённого для вкладки диффов: дифф рабочего дерева против `HEAD`, числа добавленных
- * и удалённых строк, и ОТДЕЛЬНО — сколько файлов скрыто как секреты.
+ * и удалённых строк и ОТДЕЛЬНО два числа про то, чего в списке НЕТ, — сколько файлов скрыто
+ * как секреты и сколько записей неотслеживаемо.
  *
  * Исключение живёт в самом вызове (`:(exclude)` в пути), иначе закрытое чтение файла обходится
  * вкладкой диффов. Список скрытых считается вторым вызовом, который отдаёт ТОЛЬКО ИМЕНА:
  * число «скрыто: 1» обязано быть честным, а не молчанием. Возвращаемый список ещё раз
  * процеживается через `isSecretPath()` — страховка на случай, если форма образца pathspec
  * промахнулась.
+ *
+ * НЕОТСЛЕЖИВАЕМОЕ СЧИТАЕТСЯ ТРЕТЬИМ ВЫЗОВОМ И ОТДАЁТСЯ ЧИСЛОМ — по той же причине, что
+ * и скрытое. `diff HEAD` новых файлов не показывает вовсе: задача, которая только добавляет
+ * файлы, даёт ПУСТУЮ вкладку при непустом дереве, и молчаливый неполный список неотличим
+ * от «изменений нет». Поддержки неотслеживаемых здесь нет и в этой фазе не будет — есть
+ * честность: страница обязана сказать, сколько их и почему их тут нет.
+ *
+ * СЧИТАЮТСЯ ЗАПИСИ `git status`, А НЕ ФАЙЛЫ, и разница названа тут, чтобы её не пришлось
+ * искать: при `--untracked-files=normal` целиком новый каталог — ОДНА запись. Число потому
+ * и совпадает с тем, что человек видит в `git status`, а не с числом файлов на диске.
+ * Считает их `status()` выше — своего разбора здесь нет, чтобы два места не разъехались.
+ * Цена — ещё один вызов git на открытие вкладки; вкладка открывается по клику, а не
+ * по таймеру, и опроса по времени на странице нет вовсе.
+ *
+ * `untracked: null` значит «не сосчитано» (git не ответил) и `0` не заменяет: ноль означал бы
+ * «новых нет», а это разные вещи.
  */
 export async function changedFiles(root) {
   const excludes = secretPathspecs().map((s) => `:(exclude)${s}`);
   const r = await run(root, 'diff', ['--numstat', '-z', 'HEAD', '--', '.', ...excludes], { maxBytes: MAX_DIFF_BYTES });
-  if (!r.ok) return { ok: false, repo: false, git: r.code !== FAULT.GIT_UNAVAILABLE, files: [], hidden: 0, truncated: false, code: r.code };
-  if (notRepo(r)) return { ok: true, repo: false, git: true, files: [], hidden: 0, truncated: false, code: null };
+  if (!r.ok) return { ok: false, repo: false, git: r.code !== FAULT.GIT_UNAVAILABLE, files: [], hidden: 0, untracked: null, truncated: false, code: r.code };
+  if (notRepo(r)) return { ok: true, repo: false, git: true, files: [], hidden: 0, untracked: null, truncated: false, code: null };
   if (r.exit !== 0) {
     // ВНЕ РЕПОЗИТОРИЯ `diff` ДАЁТ 129, А НЕ 128 (уходит в `--no-index` и печатает справку),
     // поэтому «не репозиторий» здесь узнаётся отдельным вопросом, а не кодом возврата.
@@ -318,10 +335,10 @@ export async function changedFiles(root) {
     if (!r.truncated) {
       const tree = await insideWorkTree(root);
       if (tree.known && !tree.repo) {
-        return { ok: true, repo: false, git: true, files: [], hidden: 0, truncated: false, code: null };
+        return { ok: true, repo: false, git: true, files: [], hidden: 0, untracked: null, truncated: false, code: null };
       }
     }
-    return { ok: false, repo: true, git: true, files: [], hidden: 0, truncated: r.truncated, code: FAULT.GIT_FAILED };
+    return { ok: false, repo: true, git: true, files: [], hidden: 0, untracked: null, truncated: r.truncated, code: FAULT.GIT_FAILED };
   }
 
   const fields = r.out.toString('utf8').split('\u0000');
@@ -345,7 +362,14 @@ export async function changedFiles(root) {
     hidden = h.out.toString('utf8').split('\u0000').filter((x) => x).length;
   }
 
-  return { ok: true, repo: true, git: true, files, hidden, truncated: r.truncated, code: null };
+  // Неотслеживаемое: не список, а число. Имена сюда не едут — вкладка их не показывает,
+  // а число отвечает на единственный вопрос человека: «весь ли это дифф».
+  const st = await status(root);
+  const untracked = st.ok && st.repo
+    ? st.entries.filter((e) => e.kind === 'untracked').length
+    : null;
+
+  return { ok: true, repo: true, git: true, files, hidden, untracked, truncated: r.truncated, code: null };
 }
 
 /**
