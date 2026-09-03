@@ -46,7 +46,20 @@ const FAULT_WORDS = Object.freeze({
 
 const fault = (code) => FAULT_WORDS[code] || `отказ демона: ${code || 'неизвестно'}`;
 
-export function createDiff({ host, files, summary, modeButton, api, ui }) {
+/**
+ * Ширина полотна, ниже которой две колонки перестают быть полезными.
+ *
+ * Число не выдумано: 900 — СОБСТВЕННОЕ значение редактора сравнения по умолчанию
+ * (`renderSideBySideInlineBreakpoint` в поставке `monaco-editor` 0.56.0). Раньше он на этом
+ * пороге САМ уходил на ленту, а кнопка продолжала обещать две колонки — то есть переключатель
+ * врал. Теперь автоматический переход выключен (`useInlineViewWhenSpaceIsLimited: false`
+ * при создании полотна), а порог остался ровно там же и служит только ПОДПИСЬЮ.
+ *
+ * У РЕЖИМА ОДИН ХОЗЯИН — КНОПКА. Второй хозяин, решающий за неё по ширине, и был дефектом.
+ */
+const NARROW_PX = 900;
+
+export function createDiff({ host, files, summary, modeButton, modeNote, api, ui }) {
   const { el, clear, setText } = ui;
 
   let monaco = null;
@@ -63,6 +76,11 @@ export function createDiff({ host, files, summary, modeButton, api, ui }) {
       automaticLayout: false,
       readOnly: true,
       renderSideBySide: sideBySide,
+      // РЕЖИМ РОВНО ТОТ, ЧТО ГОВОРИТ КНОПКА. Без этой строки редактор сравнения на узком
+      // полотне уходит на ленту САМ (порог `NARROW_PX`), а кнопка продолжает обещать две
+      // колонки — молча, и человек читает не то, что просил. Подпись «узко» рядом с кнопкой
+      // (`renderMode()`) остаётся: она объясняет, почему две колонки тесные, но режим не меняет.
+      useInlineViewWhenSpaceIsLimited: false,
       minimap: { enabled: false },
       fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace',
       fontSize: 13,
@@ -87,7 +105,19 @@ export function createDiff({ host, files, summary, modeButton, api, ui }) {
    * Обычный редактор в центре этим не болеет — он восстанавливается сам (проверено там же),
    * поэтому правило стоит здесь, а не в общем месте: разное поведение — разный код.
    */
+  /**
+   * Тихая подпись у кнопки режима. Она НЕ управляет режимом и не спорит с кнопкой — только
+   * называет ширину, на которой две колонки становятся тесными (см. `NARROW_PX`).
+   */
+  function renderMode() {
+    if (!modeNote) return;
+    const width = host.clientWidth;
+    // Спрятанная вкладка отдаёт ноль, и «узко» тогда значило бы «не показано», а не «тесно».
+    setText(modeNote, width && width < NARROW_PX ? 'узко' : '');
+  }
+
   function layout() {
+    renderMode();
     if (!view) return;
     const width = host.clientWidth;
     const height = host.clientHeight;
@@ -109,7 +139,18 @@ export function createDiff({ host, files, summary, modeButton, api, ui }) {
       return;
     }
 
-    await ensureView();
+    try {
+      await ensureView();
+    } catch (e) {
+      // ОТКАЗ ЗАГРУЗКИ ПОЛОТНА ЧЕЛОВЕКУ ВИДЕН, а не только в консоли — по образцу `open()`
+      // в `pult/web/editor.mjs`. Раньше клик по файлу при неподнявшемся загрузчике оставлял
+      // ПУСТОЕ полотно и молчащую строку итога: со стороны это неотличимо от «пульт завис».
+      // Выбранный файл при этом сбрасывается, чтобы следующий клик пробовал заново, а не
+      // считался повтором уже показанного.
+      selected = null;
+      setText(summary, `полотно сравнения не загрузилось: ${e && e.message ? e.message : 'причина неизвестна'}`);
+      return;
+    }
     const head = data.head || { exists: false, text: '', binary: false };
     const work = data.work || { exists: false, text: '' };
 
@@ -219,6 +260,7 @@ export function createDiff({ host, files, summary, modeButton, api, ui }) {
     modeButton.textContent = sideBySide ? 'Показать лентой' : 'Показать в две колонки';
     if (view) view.updateOptions({ renderSideBySide: sideBySide });
     layout();
+    renderMode();
   });
 
   return { load, layout, reset };

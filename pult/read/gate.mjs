@@ -115,12 +115,25 @@ async function readReport(kitDir, budget, faults) {
 /**
  * Состояние приёмки проекта.
  *
+ * ПРИЗНАК `report: false` (фаза 3) ОТКЛЮЧАЕТ ЧТЕНИЕ ОТЧЁТА ПРИЁМКИ ЦЕЛИКОМ: `readReport()`
+ * не зовётся вовсе, поле отчёта пустое. Сделано СТРУКТУРНО, а не соглашением о переносе
+ * полей: отчёт несёт список имён упавших проверок — свободный текст из чужого проекта, —
+ * и «поле не уезжает, потому что мы его не переносим» держится дисциплиной каждого нового
+ * потребителя, а «поле не уезжает, потому что оно не читалось» не держится ничем и потому
+ * крепче. Второй мотив — цена: лёгкий маршрут ожиданий зовётся ПО РАСПИСАНИЮ, и лишнее чтение
+ * файла на каждый проект каждую минуту не бесплатно.
+ *
+ * УМОЛЧАНИЕ НЕ МЕНЯЕТСЯ: без признака поведение прежнее, и существующие вызывающие
+ * не трогаются.
+ *
  * @param {string} kitDir  папка кита проекта
- * @param {object} options `budget` — сквозной счётчик запроса
+ * @param {object} options `budget` — сквозной счётчик запроса; `report: false` — не читать
+ *                         отчёт приёмки вовсе
  * @returns {{gate: object|null, faults: Array}}
  */
 export async function readGate(kitDir, options = {}) {
   const budget = options.budget || null;
+  const wantReport = options.report !== false;
   const faults = [];
 
   const res = await readTextCapped(path.join(kitDir, 'artifacts', 'GATE_STATE.json'), MAX_TEXT_FILE, budget);
@@ -162,7 +175,9 @@ export async function readGate(kitDir, options = {}) {
     if (!armedAt) faults.push({ field: 'gate.armed_at', code: FAULT.TIME_UNRECOGNISED });
   }
 
-  const report = await readReport(kitDir, budget, faults);
+  // Отчёт читается ТОЛЬКО при включённом признаке: выключенный признак означает «файл
+  // не открывался», а не «прочли и не отдали».
+  const report = wantReport ? await readReport(kitDir, budget, faults) : null;
 
   // Поля переносятся поимённо: разобранный чужой объект не разворачивается никогда.
   return {

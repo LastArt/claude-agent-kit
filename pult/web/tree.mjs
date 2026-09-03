@@ -95,7 +95,7 @@ export function createTree({ root, note, api, ui, onOpenFile }) {
     const r = await api.tree(projectId, dirPath);
     const data = r.body || {};
     if (!r.ok || !data.ok) {
-      list.appendChild(el('li', 'muted small', `каталог не прочитан: ${data.code || r.status || 'нет связи'}`));
+      list.appendChild(el('li', 'muted small', `каталог не прочитан: ${data.code || r.status || 'нет связи с демоном'}`));
       return;
     }
     for (const entry of data.entries || []) list.appendChild(row(entry, data.dir || ''));

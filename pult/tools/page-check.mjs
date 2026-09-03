@@ -2,7 +2,7 @@
 /**
  * ПОСТОЯННЫЕ МАШИННЫЕ ПРОВЕРКИ СТРАНИЦЫ: полотно сравнения и кнопки редактора.
  *
- *   node pult/tools/page-check.mjs [каталог для стендов] [--negative layout|buttons]
+ *   node pult/tools/page-check.mjs [каталог для стендов] [--negative <проба>]
  *
  * ЗАЧЕМ ЭТОТ ИНСТРУМЕНТ ВООБЩЕ ЕСТЬ. Два дефекта фазы 2 нашёл человек руками ПОСЛЕ вердикта
  * ревью: полотно сравнения схлопывалось в полосу в несколько пикселей после изменения размера
@@ -35,11 +35,49 @@
  *      число в ней разошлось с тем, что видит `git status` (на стенде их ровно два: файл
  *      и каталог целиком). Молчаливо неполный список — это дефект, а не особенность.
  *
+ *   4. ПОЛОТНО СРАВНЕНИЯ ГОВОРИТ ПРИЧИНУ (фаза 3). Загрузчик редактора глушится БЛОКИРОВКОЙ
+ *      ЕГО ЗАПРОСА через протокол отладчика с последующей перезагрузкой страницы — файлы
+ *      стенда при этом не правятся ни одним байтом. Клик по файлу во вкладке диффов обязан
+ *      оставить непустую строку итога С ПРИЧИНОЙ. Краснеет, если строка пуста или НЕ
+ *      ИЗМЕНИЛАСЬ: молчащее полотно со стороны неотличимо от «пульт завис». Блокировка
+ *      недоступна — код 3, а не тихий зелёный. Идёт ПОСЛЕДНЕЙ: после неё редактора на
+ *      странице нет вовсе.
+ *
+ *   5. ТЕРМИНАЛ НЕ МЕРЯЕТСЯ СПРЯТАННЫМ (фаза 3). Спрятанному узлу браузер отдаёт нули,
+ *      подгонка на нулях считает одну колонку и одну строку и ОТСЫЛАЕТ ЭТОТ РАЗМЕР ДЕМОНУ —
+ *      псевдотерминал начинает переносить строки по одному знаку. Поднимается сессия оболочки,
+ *      дальше уход на вкладку диффов, обе ручки (изменение размера окна и сворачивание правой
+ *      колонки) и подсчёт строк БЕЗ возврата на вкладку терминала. Краснеет при числе строк
+ *      меньше `TERM_MIN_ROWS`. Сессия не поднялась — код 3.
+ *
+ *   6. ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА НЕ ВРЁТ (фаза 3). Раньше редактор сравнения САМ уходил на ленту
+ *      на узком полотне, а кнопка продолжала обещать две колонки. Окно сужается так, чтобы
+ *      полотно стало уже порога, и меряется ширина ЛЕВОЙ СТОРОНЫ сравнения в обоих режимах,
+ *      плюс подпись «узко». Пороги и запрет сравнивать с нулём — у `MODE_DEAD_PX`: в ленточном
+ *      режиме левая сторона НЕ обнуляется, там остаётся фиксированная полоса.
+ *
+ *   7. ДЕРЕВО НЕ ТЕРЯЕТСЯ ПРИ ПЕРЕКЛЮЧЕНИИ ПРОЕКТОВ (фаза 3, по находке человека). В реестре
+ *      прогона ДВА стенда, у второго свой файл-метка. Проверка уходит во второй, возвращается
+ *      в первый и РАСКРЫВАЕТ каталог — то самое действие, на котором человек увидел отказ.
+ *      Краснеет, если дерево показывает файлы предыдущего проекта, если своих файлов в нём нет
+ *      или если раскрытый каталог сообщает об отказе. Предусловием считается только
+ *      «дерево вообще наполнилось»: всё остальное обязано краснеть, а не выдавать «ничего
+ *      не доказано», иначе больной код прячется за отказом проверки.
+ *
+ *   8. СТРАНИЦА ГОВОРИТ, ЧТО СВЯЗИ С ДЕМОНОМ НЕТ (фаза 3, по находке человека). Демон стенда
+ *      гасится намеренно, поэтому проверка идёт САМОЙ ПОСЛЕДНЕЙ. Дальше делается то же, что
+ *      делал человек, — переключение проекта, а не нажатие «Обновить»: та кнопка красит полосу
+ *      сама и на прежнем коде, и проверка на ней была бы зелёной (выяснено пробой). Краснеет,
+ *      если после обрыва полоса состояния осталась прежней или точка не стала тревожной.
+ *
  * ОТРИЦАТЕЛЬНЫЕ ПРОБЫ ВСТРОЕНЫ, потому что «проверка обязана уметь провалиться» — это
  * свойство, которое надо уметь показать в любой день, а не только в день написания.
  * `--negative layout` возвращает `layout()` во вкладке диффов к прежней форме (вызов без
  * размеров), `--negative buttons` возвращает `setButtons()` к прежней («Сохранить» включена
- * писабельностью, а не правкой). ПРАВИТСЯ ТОЛЬКО КОПИЯ СТЕНДА, файлы репозитория не трогаются
+ * писабельностью, а не правкой), `--negative diffnotice` снимает перехват исключения вокруг
+ * подготовки полотна, `--negative termhidden` снимает проверку видимости в подгонке терминала,
+ * `--negative diffmode` снимает явный порог при создании полотна. Полный список печатает
+ * `--help`. ПРАВИТСЯ ТОЛЬКО КОПИЯ СТЕНДА, файлы репозитория не трогаются
  * ни в одном режиме. Проба, не наложившаяся на текст (код изменился), — это код 3, а не тихий
  * зелёный: непроверенное называется.
  *
@@ -92,6 +130,8 @@ import process from 'node:process';
 import { WebSocket } from 'ws';
 
 import { resolveCommand, withArgs, gitEnv } from '../lib/fs-safe.mjs';
+import { PENDING_REASONS } from '../config.mjs';
+import { pathToFileURL } from 'node:url';
 import { addProject } from '../lib/registry.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -105,11 +145,65 @@ const CDP_CALL_MS = 30000;
 const WINDOW = Object.freeze({ width: 1584, height: 749 });
 const WINDOW_RESIZED = Object.freeze({ width: 1280, height: 880 });
 
+// --- фаза 3: числа трёх новых проверок ----------------------------------------
+
+/**
+/**
+ * Узкое окно для проверки 6: полотно диффа при нём заведомо уже порога `NARROW_PX`.
+ *
+ * Замер, а не глазомер: при окне 1584 полотно 644 px, при 1200 — 260 px, при 1000 — 254 px.
+ * Ниже примерно 1200 полотно почти не сжимается: у колонок страницы и списка файлов свои
+ * минимумы. Поэтому точное число окна здесь не несущее, и судить по абсолютной ширине сторон
+ * нельзя — суждение ниже идёт ДОЛЯМИ.
+ */
+const WINDOW_NARROW = Object.freeze({ width: 1200, height: 800 });
+
+/**
+ * Порог «узко» — ТО ЖЕ ЧИСЛО, что `NARROW_PX` в `pult/web/diff.mjs`.
+ *
+ * Копия здесь намеренная и работает сторожем: разойдутся — проверка 6 покраснеет на подписи,
+ * и это верный исход, а не ложная тревога. Число не выдумано ни там, ни здесь: 900 —
+ * собственное значение редактора сравнения по умолчанию (`renderSideBySideInlineBreakpoint`),
+ * на котором он раньше САМ уходил на ленту.
+ */
+const NARROW_PX = 900;
+
+/**
+ * ПОЧЕМУ РЕЖИМ МЕРЯЕТСЯ ДОЛЯМИ, А НЕ СРАВНЕНИЕМ С НУЛЁМ.
+ *
+ * В ленточном режиме левая сторона НЕ обнуляется: редактор сравнения оставляет узкую полосу.
+ * Замерено трижды, на разных ширинах полотна: 484 px → 38, около 1100 px → 38, 260 px → 38.
+ * Остаток ФИКСИРОВАННЫЙ и от ширины не зависит. Живая сторона, наоборот, идёт долей полотна:
+ * 227 при 484, 515 при ~1100, 115 при 260 — то есть 44–47% в каждом замере.
+ *
+ * Отсюда суждение долями, а не пикселями: доля переживает и другой шрифт, и другую полосу
+ * прокрутки, и другую машину. `MODE_LIVE_RATIO = 0.30` взято с запасом от измеренных 44–47%;
+ * `MODE_DEAD_RATIO = 0.20` — сверху от измеренных 15% (38 из 260) на самом узком полотне,
+ * какое инструмент вообще делает. Между 0,20 и 0,30 остаётся полоса неопределённости,
+ * и попасть в неё случайно неоткуда. `MODE_DEAD_PX` держит вторую, независимую от доли
+ * дорогу к тому же выводу: фиксированный остаток измерен как 38 px, порог стоит в 2,6 раза
+ * выше него.
+ *
+ * СРАВНЕНИЕ С НУЛЁМ ЗАПРЕЩЕНО ПРЯМО: оно покраснеет на ЗДОРОВОЙ странице (замечено
+ * исполнителем на шаге 21 и подтверждено ревью 02.09.2026 своим замером).
+ */
+const MODE_LIVE_RATIO = 0.30;
+const MODE_DEAD_RATIO = 0.20;
+const MODE_DEAD_PX = 100;
+/** Меньше этого числа строк в терминале — он смерян спрятанным (здоровый держит десятки). */
+const TERM_MIN_ROWS = 10;
+
+/** Высота узла, ниже которой не помещается ни одной строки: знакоместо при кегле 13 около 17 px. */
+const TERM_ZERO_PX = 20;
+
 // Стенд: сколько строк в файле, по которому смотрится дифф. Число не круглое ради красоты —
 // полотну нужно заведомо больше строк, чем помещается в окно, иначе «мало видимых строк»
 // перестало бы отличать больное полотно от короткого файла.
 const STAND_LINES = 120;
 const STAND_UNTRACKED = 2;   // `new.txt` и каталог `newdir/` целиком
+
+/** Файл-метка второго стенда: по нему видно, чьё дерево показано после переключения. */
+const SECOND_MARK = 'метка-второго.txt';
 
 const out = (s = '') => process.stdout.write(`${s}\n`);
 const err = (s = '') => process.stderr.write(`[pult] ${s}\n`);
@@ -238,6 +332,66 @@ const PROBES = Object.freeze({
     what: '«Сохранить» включена писабельностью, а не правкой — прежняя форма setButtons()',
     from: '    saveButton.disabled = !(writable && dirty);',
     to: '    saveButton.disabled = !writable;',
+  },
+  // --- фаза 3: три отложенных дефекта §2.8 контракта --------------------------
+  diffnotice: {
+    file: 'web/diff.mjs',
+    what: 'подготовка полотна без перехвата исключения — прежняя (молчащая) форма showFile()',
+    // `while (false) { … }` оставляет ТЕЛО прежнего перехвата синтаксически целым, но
+    // недостижимым: получается ровно прежний код — голый вызов и ни слова человеку.
+    from: [
+      '    try {',
+      '      await ensureView();',
+      '    } catch (e) {',
+    ].join('\n'),
+    to: [
+      '    await ensureView();',
+      '    while (false) {',
+      '      const e = new Error(\'проба\');',
+    ].join('\n'),
+  },
+  termhidden: {
+    file: 'web/terminal.mjs',
+    what: 'подгонка без проверки помещающегося размера — прежняя форма layout()',
+    from: [
+      '    let dims = null;',
+      '    try { dims = fit.proposeDimensions(); } catch { dims = null; }',
+      '    // Спрятанная вкладка (`display: none`) даёт здесь нечисловой расчёт — он тоже мимо.',
+      '    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;',
+      '    if (dims.cols < MIN_COLS || dims.rows < MIN_ROWS) return;',
+    ].join('\n'),
+    to: '    // проба: подгонка без проверки помещающегося размера',
+  },
+  diffmode: {
+    file: 'web/diff.mjs',
+    what: 'создание полотна без явного порога — редактор сравнения сам уходит на ленту',
+    from: '      useInlineViewWhenSpaceIsLimited: false,',
+    to: '      // проба: без явного порога',
+  },
+  treeid: {
+    file: 'web/tree.mjs',
+    what: 'дерево не запоминает новый проект — показывает предыдущий после переключения',
+    from: '    projectId = id;',
+    to: '    projectId = projectId || id;',
+  },
+  // --- фаза 4: адреса назначения по причине ожидания -------------------------
+  address: {
+    file: 'web/addresses.mjs',
+    what: 'у причины «заблокировано» пропадает свой адрес — уведомление ведёт в общее окно',
+    from: "  blocked: 'state',",
+    to: '',
+  },
+  branch: {
+    file: 'web/addresses.mjs',
+    what: 'адрес есть, а ветви под него в маршрутизаторе нет — причина молча уходит в общее окно',
+    from: "  blocked: 'state',",
+    to: "  blocked: 'nowhere',",
+  },
+  daemondown: {
+    file: 'web/app.mjs',
+    what: 'обрыв связи ничего не меняет на странице — прежняя форма req()',
+    from: '    setDaemonReachable(false);',
+    to: '    void 0;',
   },
 });
 
@@ -632,6 +786,334 @@ async function checkButtons(page, standDir) {
   return { notes };
 }
 
+/**
+ * ПРОВЕРКА 5: терминал не меряется при нулевом размере узла.
+ *
+ * Узлу нулевого размера браузер отдаёт нули, подгонка на нулях считает одну колонку и одну
+ * строку и ОТСЫЛАЕТ ЭТОТ РАЗМЕР ДЕМОНУ: псевдотерминал начинает переносить строки по одному
+ * знаку, и вернувшийся человек видит мусор.
+ *
+ * ДВА ПУТИ, И ВТОРОЙ — НЕСУЩИЙ. Первый — тот, которым дефект нашли: сессия, уход на вкладку
+ * диффов и обе ручки, зовущие все три полотна разом (изменение размера окна и сворачивание
+ * правой колонки). Он остаётся замером, но КРАСНОГО сам по себе не даёт, и это выяснено
+ * замером, а не рассуждением: спрятанная вкладка — это `display: none`, при нём
+ * `getComputedStyle` отдаёт `auto`, и `fit()` привезённой сборки `addon-fit` бросает свой
+ * расчёт по `isNaN`. То есть на ЭТОМ пути сборка защищает нас сама, а проба, снимающая нашу
+ * проверку, не краснеет — и зелёный тут ничего бы не доказывал.
+ *
+ * Второй путь доводит узел до состояния, от которого наша проверка и стоит: узел ПОКАЗАН,
+ * но имеет нулевую высоту (свёрнутый контейнер, доля раскладки, промежуточный кадр). Тогда
+ * `getComputedStyle` отдаёт честный `0px`, расчёт даёт одну строку, и подгонка уходит демону.
+ * Состояние наводится намеренно — временным стилем на узле терминала, и снимается сразу после
+ * замера. Краснеет при числе строк меньше `TERM_MIN_ROWS`. Сессия не поднялась — код 3.
+ */
+async function checkTermHidden(page) {
+  const notes = [];
+  const rows = "return document.querySelectorAll('#terminal-host .xterm-rows > div').length;";
+
+  await page.ev("document.getElementById('tab-terminal').click(); return true;");
+  await sleep(300);
+  await page.ev("document.getElementById('btn-session').click(); return true;");
+  const up = await page.waitFor("return document.getElementById('terminal-status').textContent.indexOf('подключено') >= 0;");
+  if (!up) {
+    const why = await page.ev("return document.getElementById('terminal-status').textContent;");
+    return { fatal: `сессия терминала не поднялась (${why}) — мерить нечего` };
+  }
+  await sleep(900);
+
+  const before = await page.ev(rows);
+  await page.ev("document.getElementById('tab-diff').click(); return true;");
+  await sleep(250);
+  await page.resize(WINDOW_RESIZED);
+  await page.ev("document.getElementById('btn-tree-collapse').click(); return true;");
+  await sleep(900);
+  const hiddenRows = await page.ev(rows);
+  out(`  путь 1 (спрятанная вкладка): строк до ухода ${before} · после рывка ${hiddenRows}`);
+  if (hiddenRows < TERM_MIN_ROWS) {
+    notes.push(`терминал смерян спрятанным: строк осталось ${hiddenRows} при ${before} до ухода`);
+  }
+
+  // Колонка обратно, вкладка терминала снова показана — второй путь меряет ПОКАЗАННЫЙ узел.
+  await page.ev("document.getElementById('btn-tree-collapse').click(); return true;");
+  await page.ev("document.getElementById('tab-terminal').click(); return true;");
+  await sleep(500);
+
+  // ПУТЬ 2, НЕСУЩИЙ: узел показан, но высоты у него нет. Стиль наводится временно и снимается
+  // сразу после замера — файлы стенда при этом не правятся ни одним байтом.
+  const zero = await page.ev(`
+    const host = document.getElementById('terminal-host');
+    const keep = host.getAttribute('style') || '';
+    // 'flex: none' обязателен: узел — растягивающийся элемент колонки, и одна только
+    // 'height: 0' ему ничего не сделает — 'flex-grow' вернёт высоту обратно.
+    host.style.cssText = keep + ';flex:none;height:0px;min-height:0;';
+    // Меряем ТО ЖЕ, что читает подгонка: высоту по вычисленному стилю. Свойство clientHeight
+    // здесь не годится — оно считает вместе с отступами узла и на нулевой высоте даёт 12.
+    const reached = parseInt(window.getComputedStyle(host).getPropertyValue('height'), 10);
+    window.dispatchEvent(new Event('resize'));
+    await new Promise((r) => setTimeout(r, 700));
+    const n = document.querySelectorAll('#terminal-host .xterm-rows > div').length;
+    host.setAttribute('style', keep);
+    window.dispatchEvent(new Event('resize'));
+    return { reached, rows: n };
+  `);
+  // Состояние считается наведённым, если высоты не хватает даже на ОДНУ строку текста.
+  // Ровный ноль здесь недостижим и не нужен: узел считает размер вместе с отступами
+  // (border-box), поэтому на «нулевой» высоте вычисленный стиль отдаёт 12 px — это меньше
+  // высоты знакоместа (около 17 px при кегле 13), и расчёт подгонки всё равно даёт одну строку.
+  if (!(zero.reached >= 0 && zero.reached < TERM_ZERO_PX)) {
+    return { fatal: `узел терминала не удалось довести до нулевой высоты (${zero.reached} px) — путь 2 ничего не доказывает`, notes };
+  }
+  out(`  путь 2 (узел показан, высота ноль): строк ${zero.rows} (порог ${TERM_MIN_ROWS})`);
+  if (zero.rows < TERM_MIN_ROWS) {
+    notes.push(`терминал смерян при нулевой высоте узла: строк осталось ${zero.rows} при ${before} до этого`);
+  }
+
+  // Прибираем за собой: сессия отпущена — она бы держала процесс пять минут.
+  await sleep(400);
+  await page.ev("document.getElementById('btn-session').click(); return true;");
+  await sleep(400);
+  return { notes };
+}
+
+/**
+ * ПРОВЕРКА 6: переключатель режима не врёт.
+ *
+ * Раньше редактор сравнения САМ уходил на ленту, когда полотно становилось уже порога,
+ * а кнопка продолжала обещать две колонки. Меряется ширина ЛЕВОЙ СТОРОНЫ сравнения в обоих
+ * режимах при полотне ЗАВЕДОМО УЖЕ ПОРОГА — то есть ровно там, где прежний код врал.
+ * Пороги и причина, по которой сравнение с нулём запрещено, — у `MODE_DEAD_PX`.
+ */
+async function checkDiffMode(page) {
+  const notes = [];
+  const shot = `
+    const host = document.getElementById('diff-host');
+    const left = host ? host.querySelector('.editor.original') : null;
+    const note = document.getElementById('diff-mode-note');
+    return {
+      width: host ? host.clientWidth : null,
+      left: left ? left.clientWidth : null,
+      button: document.getElementById('btn-diff-mode').textContent,
+      note: note ? note.textContent.trim() : null,
+      noteExists: !!note,
+    };
+  `;
+
+  await page.resize(WINDOW_NARROW);
+  await page.ev("document.getElementById('tab-diff').click(); return true;");
+  await sleep(400);
+  if (!await page.waitFor("return !!document.querySelector('#diff-host .editor.original');")) {
+    return { fatal: 'левой стороны сравнения нет в разметке — мерить нечего' };
+  }
+  await sleep(500);
+
+  const wide = await page.ev(shot);
+  if (wide.width === null || wide.width >= NARROW_PX) {
+    return { fatal: `полотно ${wide.width} px не уже порога ${NARROW_PX} — проверка ничего не докажет` };
+  }
+  const liveShare = wide.left === null ? null : Math.round((wide.left / wide.width) * 100);
+  out(`  две колонки: полотно ${wide.width} px · левая сторона ${wide.left} px (${liveShare}% при пороге ${Math.round(MODE_LIVE_RATIO * 100)}%) · кнопка «${wide.button}»`);
+  if (wide.left === null || wide.left < wide.width * MODE_LIVE_RATIO) {
+    notes.push(`кнопка обещает две колонки, а левая сторона ${wide.left} px при полотне ${wide.width} px — редактор ушёл на ленту сам`);
+  }
+
+  // Подпись «узко» — часть того же обещания: она объясняет тесноту, но режим не меняет.
+  if (!wide.noteExists) notes.push('узла подписи режима #diff-mode-note на странице нет');
+  else if (wide.note !== 'узко') notes.push(`полотно ${wide.width} px уже порога ${NARROW_PX}, а подписи «узко» нет (в узле «${wide.note}»)`);
+
+  await page.ev("document.getElementById('btn-diff-mode').click(); return true;");
+  await sleep(700);
+  const inline = await page.ev(shot);
+  const deadShare = inline.left === null ? null : Math.round((inline.left / inline.width) * 100);
+  const collapsed = inline.left !== null
+    && (inline.left < MODE_DEAD_PX || inline.left <= inline.width * MODE_DEAD_RATIO);
+  out(`  лента: левая сторона ${inline.left} px (${deadShare}%) · кнопка «${inline.button}»`
+    + ` · схлопнулась — меньше ${MODE_DEAD_PX} px либо ${Math.round(MODE_DEAD_RATIO * 100)}% полотна`);
+  if (!collapsed) {
+    notes.push(`кнопка обещает ленту, а левая сторона ${inline.left} px при полотне ${inline.width} px — режим не сменился`);
+  }
+
+  // Возвращаем две колонки: следующая проверка не должна получить чужой режим.
+  await page.ev("document.getElementById('btn-diff-mode').click(); return true;");
+  await sleep(500);
+  await page.resize(WINDOW);
+  return { notes };
+}
+
+/**
+ * ПРОВЕРКА 4: полотно сравнения говорит причину, а не молчит.
+ *
+ * Загрузчик редактора глушится БЛОКИРОВКОЙ ЕГО ЗАПРОСА через протокол отладчика — файлы стенда
+ * не правятся ни одним байтом. Дальше страница перезагружается, и клик по файлу во вкладке
+ * диффов обязан оставить непустую строку итога С ПРИЧИНОЙ.
+ *
+ * Краснеет, если строка итога пуста или НЕ ИЗМЕНИЛАСЬ: молчащее полотно со стороны неотличимо
+ * от «пульт завис». Блокировка недоступна — код 3, а не тихий зелёный.
+ *
+ * Проверка идёт ПОСЛЕДНЕЙ намеренно: после неё на странице нет редактора вовсе.
+ */
+async function checkDiffNotice(page, cdp, sessionId, port) {
+  const notes = [];
+  const summary = "return document.getElementById('diff-summary').textContent;";
+
+  for (const [method, params] of [
+    ['Page.enable', {}],
+    ['Network.enable', {}],
+    ['Network.setBlockedURLs', { urls: ['*vendor/monaco/vs/loader.js*'] }],
+  ]) {
+    const r = await cdp.send(method, params, sessionId);
+    if (r.error) return { fatal: `протокол отладчика не даёт блокировать запросы (${method}): ${r.error.message || 'без причины'}` };
+  }
+
+  await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/` }, sessionId);
+  if (!await page.waitFor("return document.querySelectorAll('#projects-list .project').length > 0;", 30000)) {
+    return { fatal: 'страница не поднялась после перезагрузки — мерить нечего' };
+  }
+  if (await page.ev('return typeof window.require;') !== 'undefined') {
+    return { fatal: 'загрузчик редактора всё равно подключился — блокировка не сработала, доказывать нечего' };
+  }
+
+  // ВЫБИРАЕМ СТЕНД ПО ИМЕНИ, а не первый в списке: проектов в реестре прогона два,
+    // и порядок строк — не наше дело.
+    await page.ev(`
+      const rows = Array.from(document.querySelectorAll('#projects-list .project'));
+      const want = rows.find((r) => r.textContent.indexOf('стенд страницы') >= 0);
+      if (!want) return false;
+      want.click();
+      return true;
+    `);
+  // ЖДЁМ КОНЦА ВЫБОРА ПРОЕКТА, а не просто клика. Выбор заканчивается сбросом вкладки диффов,
+  // и вкладка, открытая ДО его конца, получает список файлов уже без идентификатора проекта:
+  // клик по файлу тогда уходит на `/projects//diff` и даёт отказ демона — то есть проверка
+  // мерила бы совсем другую ветвь. Признак конца тот же, что в основном прогоне, — дерево.
+  if (!await page.waitFor("return document.querySelectorAll('#tree-root .node').length > 0;")) {
+    return { fatal: 'дерево проекта не наполнилось — выбор проекта не закончился' };
+  }
+  await page.ev("document.getElementById('tab-diff').click(); return true;");
+  if (!await page.waitFor("return document.querySelectorAll('#diff-files .diff-file').length > 0;")) {
+    return { fatal: 'список изменённых файлов не появился — кликать нечего' };
+  }
+  await sleep(400);
+
+  const before = await page.ev(summary);
+  await page.ev("document.querySelector('#diff-files .diff-file').click(); return true;");
+  await page.waitFor(`return document.getElementById('diff-summary').textContent !== ${JSON.stringify(before)};`, 8000);
+  const after = await page.ev(summary);
+  out(`  строка итога до клика: «${before}»`);
+  out(`  строка итога после клика: «${after}»`);
+  if (!after || !after.trim()) notes.push('строка итога пуста — полотно молчит о том, что не загрузилось');
+  else if (after === before) notes.push('строка итога не изменилась после клика — полотно молчит, а со стороны это «пульт завис»');
+
+  return { notes };
+}
+
+/**
+ * ПРОВЕРКА 7: дерево не теряется при переключении проектов (фаза 3, находка человека).
+ *
+ * Человек сообщил: открыл проект — дерево работает; ушёл в другой и вернулся — «каталог
+ * не прочитан». Корень оказался в другом (демон был остановлен), но сам путь «туда-обратно
+ * и потрогать дерево» до этого не проверялся ничем. Проверка ходит именно им.
+ *
+ * Меряется ДВЕ вещи: чьё дерево показано (у второго стенда свой файл-метка) и читается ли
+ * содержимое каталога ПОСЛЕ возврата. Краснеет, если после переключения дерево показывает
+ * чужой проект, если корень пуст или если раскрытый каталог сообщает об отказе.
+ */
+async function checkSwitchTree(page) {
+  const notes = [];
+  const rootText = "return document.getElementById('tree-root').textContent;";
+  const pick = (name) => `
+    const rows = Array.from(document.querySelectorAll('#projects-list .project'));
+    const want = rows.find((r) => r.textContent.indexOf(${JSON.stringify(name)}) >= 0);
+    if (!want) return false;
+    want.click();
+    return true;
+  `;
+
+  if (!await page.ev(pick('второй стенд'))) return { fatal: 'второго стенда нет в списке проектов' };
+  // ПРЕДУСЛОВИЕМ здесь считается только «дерево вообще наполнилось». Чьё оно — это уже ЗАМЕР,
+  // и расхождение обязано краснеть, а не выдавать «ничего не доказано»: иначе больной код
+  // прячется за «не смог проверить».
+  if (!await page.waitFor("return document.querySelectorAll('#tree-root .node').length > 0;")) {
+    return { fatal: 'дерево второго стенда не наполнилось вовсе — переключаться не с чего' };
+  }
+  await sleep(400);
+  const second = await page.ev(rootText);
+  const secondOwn = second.indexOf(SECOND_MARK) >= 0;
+  out(`  ушли во второй стенд: его метка в дереве ${secondOwn ? 'есть' : 'НЕ ПОЯВИЛАСЬ'}`);
+  if (!secondOwn) notes.push('после перехода во второй проект дерево показывает не его файлы');
+
+  if (!await page.ev(pick('стенд страницы'))) return { fatal: 'первого стенда нет в списке проектов' };
+  if (!await page.waitFor("return document.querySelectorAll('#tree-root .node').length > 0;")) {
+    return { fatal: 'дерево первого стенда не наполнилось после возврата' };
+  }
+  await sleep(400);
+
+  const back = await page.ev(rootText);
+  const foreign = back.indexOf(SECOND_MARK) >= 0;
+  const own = back.indexOf('a.txt') >= 0;
+  out(`  вернулись: свои файлы ${own ? 'видно' : 'НЕ ВИДНО'} · чужая метка ${foreign ? 'ОСТАЛАСЬ' : 'ушла'}`);
+  if (foreign) notes.push('после возврата дерево показывает файлы ПРЕДЫДУЩЕГО проекта');
+  if (!own) notes.push('после возврата в дереве нет файлов выбранного проекта');
+
+  // Обращение к дереву ПОСЛЕ возврата — то самое действие, на котором человек увидел отказ.
+  const opened = await page.ev(`
+    const nodes = Array.from(document.querySelectorAll('#tree-root .node'));
+    const dir = nodes.find((n) => {
+      const label = n.querySelector('.label');
+      return label && label.textContent === '.claude';
+    });
+    if (!dir) return false;
+    dir.click();
+    return true;
+  `);
+  if (!opened) return { fatal: 'каталога .claude нет в дереве — раскрывать нечего', notes };
+  await sleep(1200);
+
+  const after = await page.ev(rootText);
+  const refused = /не прочитан/.test(after);
+  out(`  раскрыли каталог после возврата: ${refused ? 'ОТКАЗ' : 'прочитан'}`);
+  if (refused) {
+    const line = (after.match(/каталог не прочитан:[^\n]{0,40}/) || ['—'])[0];
+    notes.push(`после возврата в проект дерево отказало: «${line}»`);
+  }
+  return { notes };
+}
+
+/**
+ * ПРОВЕРКА 8: страница ГОВОРИТ, что связи с демоном нет (фаза 3, находка человека).
+ *
+ * Демон стенда гасится намеренно, и это делает проверку ПОСЛЕДНЕЙ: после неё мерить нечего.
+ * Раньше страница в этом состоянии продолжала показывать зелёную точку и «демон 0.3.0»,
+ * а каждый виджет говорил своё — человек читал это как поломку дерева.
+ *
+ * Краснеет, если после обрыва полоса состояния осталась зелёной или её текст не изменился.
+ */
+async function checkDaemonDown(page, daemon) {
+  const notes = [];
+  const before = await page.ev("return document.getElementById('daemon-text').textContent;");
+  try { daemon.kill(); } catch { /* уже мёртв */ }
+  await sleep(1500);
+
+  // ДЕЙСТВИЕ ВЫБРАНО НЕ ЛЮБОЕ. Кнопка обновления зовёт `/health` и красит полосу САМА —
+  // на ней проверка была бы зелёной и на прежнем коде (выяснено пробой). Человек в этот
+  // момент делает другое: переключает проект. Этот путь идёт мимо `/health`, и красить
+  // полосу обязана общая дверь запросов.
+  await page.ev(`
+    const rows = Array.from(document.querySelectorAll('#projects-list .project'));
+    const want = rows.find((r) => r.textContent.indexOf('второй стенд') >= 0);
+    if (want) want.click();
+    return true;
+  `);
+  await sleep(3000);
+
+  const text = await page.ev("return document.getElementById('daemon-text').textContent;");
+  const cls = await page.ev("return document.getElementById('daemon-dot').className;");
+  out(`  до обрыва: «${before}»`);
+  out(`  после обрыва: «${text}» · точка «${cls}»`);
+  if (!/is-alarm/.test(cls)) notes.push('демон не отвечает, а точка в полосе состояния не тревожная');
+  if (text === before) notes.push('демон не отвечает, а полоса состояния говорит то же, что и раньше');
+  return { notes };
+}
+
 // --- прогон -------------------------------------------------------------------
 
 function parseArgs(argv) {
@@ -651,14 +1133,15 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     out('Постоянные машинные проверки страницы пульта:');
-    out('  node pult/tools/page-check.mjs [каталог для стендов] [--negative layout|buttons]');
-    out('Отрицательные пробы правят ТОЛЬКО копию стенда: layout — прежний вызов размеров');
-    out('во вкладке диффов, buttons — прежнее включение «Сохранить».');
+    out(`  node pult/tools/page-check.mjs [каталог для стендов] [--negative ${Object.keys(PROBES).join('|')}]`);
+    out('Отрицательные пробы правят ТОЛЬКО копию стенда и возвращают в неё прежнюю (больную)');
+    out('форму кода:');
+    for (const [name, probe] of Object.entries(PROBES)) out(`  ${name.padEnd(11)} ${probe.what}`);
     return 0;
   }
   if (args.bad) { err(`неизвестный ключ: ${args.bad}`); return 3; }
   if (args.negative !== null && !PROBES[args.negative]) {
-    err('проба бывает только layout или buttons');
+    err(`проба бывает только: ${Object.keys(PROBES).join(', ')}`);
     return 3;
   }
 
@@ -695,6 +1178,7 @@ async function main() {
 
   const standPult = path.join(parent, 'pult');
   const standProject = path.join(parent, 'project');
+  const standSecond = path.join(parent, 'project2');
   const profile = path.join(parent, 'chrome');
 
   let daemon = null;
@@ -739,6 +1223,51 @@ async function main() {
       out('');
     }
 
+    // 9. У КАЖДОЙ ПРИЧИНЫ ОЖИДАНИЯ — СВОЙ АДРЕС НАЗНАЧЕНИЯ.
+    //
+    // Проверка ЧИСТАЯ и идёт до браузера: таблица адресов (`pult/web/addresses.mjs`)
+    // разметки не касается, поэтому её читает обычный Node. Утверждение ломается ТИХО —
+    // добавили восьмую причину в набор, забыли адрес, и уведомление про неё стало вести
+    // в общее окно, то есть ровно в то молчание, которое закрывала фаза 3.
+    //
+    // ЧЕГО ЭТА ПРОВЕРКА НЕ ДЕЛАЕТ: она не открывает экраны. Что адрес действительно
+    // приводит человека куда обещано — предмет ручного пункта протокола приёмки.
+    out('9. у каждой причины ожидания есть свой адрес:');
+    {
+      const mod = await import(pathToFileURL(path.join(standPult, 'web', 'addresses.mjs')).href);
+      const missing = PENDING_REASONS.filter((r) => !mod.ADDRESSES[r]);
+      const extra = Object.keys(mod.ADDRESSES).filter((r) => !PENDING_REASONS.includes(r));
+      const fallback = mod.addressFor('такого-слова-нет') === mod.DEFAULT_ADDRESS;
+      const kinds = new Set(PENDING_REASONS.map((r) => mod.addressFor(r)));
+
+      // ВТОРАЯ ПОЛОВИНА УТВЕРЖДЕНИЯ: у каждого слова таблицы есть СВОЯ ВЕТВЬ
+      // в маршрутизаторе. Первая половина («у каждой причины есть адрес») не ловит
+      // восьмой адрес, для которого ветвь забыли завести: такой адрес молча уходил бы
+      // в умолчание, то есть в общее окно.
+      //
+      // ГРАНИЦА НАЗЫВАЕТСЯ: сверяется НАЛИЧИЕ ветви по тексту, а не то, что она делает.
+      // Подмену `plan` на `state` эта проверка не ловит и не должна — это остаётся
+      // человеку и ручному пункту протокола.
+      const routerSrc = await readFile(path.join(standPult, 'web', 'app.mjs'), 'utf8');
+      const branchless = [...kinds].filter((w) => !routerSrc.includes(`address === '${w}'`));
+      const branches = [...routerSrc.matchAll(/address === '([a-z]+)'/g)].map((m) => m[1]);
+      const orphan = branches.filter((w) => !Object.values(mod.ADDRESSES).includes(w));
+      out(`  ветвей маршрутизатора ${new Set(branches).size} · без ветви: ${branchless.length ? branchless.join(", ") : "нет"}`
+        + ` · ветвей без адреса: ${orphan.length ? orphan.join(", ") : "нет"}`);
+      if (branchless.length) { notes.push(`у адресов нет ветви в маршрутизаторе: ${branchless.join(", ")}`); code = 1; }
+      if (orphan.length) { notes.push(`в маршрутизаторе есть ветви, которых нет в таблице адресов: ${orphan.join(", ")}`); code = 1; }
+      out(`  причин ${PENDING_REASONS.length}, адресов ${Object.keys(mod.ADDRESSES).length},`
+        + ` разных мест ${kinds.size} · без адреса: ${missing.length ? missing.join(", ") : "нет"}`
+        + ` · лишних: ${extra.length ? extra.join(", ") : "нет"}`
+        + ` · умолчание: ${fallback ? "есть" : "НЕТ"}`);
+      if (missing.length) { notes.push(`без адреса назначения остались причины: ${missing.join(", ")}`); code = 1; }
+      if (extra.length) { notes.push(`в таблице адресов есть слова, которых нет в словаре причин: ${extra.join(', ')}`); code = 1; }
+      if (!fallback) { notes.push('у неопознанной причины нет адреса по умолчанию — человек попадёт в пустоту'); code = 1; }
+      out(`  итог: ${missing.length || extra.length || !fallback || branchless.length || orphan.length ? 'КРАСНО' : 'зелено'}`);
+    }
+    out('');
+
+
     const stand = await makeStand(standProject);
     if (!stand.ok) {
       err(`${stand.why} — стенд не собрался`);
@@ -747,6 +1276,22 @@ async function main() {
     out(`стенд-проект: ${STAND_LINES} строк в a.txt, неотслеживаемых записей ${stand.untracked}`);
     if (stand.untracked !== STAND_UNTRACKED) {
       err(`ожидалось ${STAND_UNTRACKED} неотслеживаемых записи, git видит ${stand.untracked}`);
+      return 3;
+    }
+
+    // ВТОРОЙ ПРОЕКТ НУЖЕН ОДНОЙ ПРОВЕРКЕ, И БЕЗ НЕГО ОНА НЕВОЗМОЖНА: переключение проектов
+    // туда-обратно нечем сделать на одном. Он нарочно НЕ репозиторий и содержит свой,
+    // ни на что не похожий файл-метку — по ней видно, чьё дерево показано.
+    await mkdir(path.join(standSecond, '.claude'), { recursive: true });
+    await writeFile(path.join(standSecond, '.claude', 'VERSION'), '1.0.0\n');
+    await writeFile(path.join(standSecond, '.claude', 'settings.json'), '{}\n');
+    await writeFile(path.join(standSecond, SECOND_MARK), 'метка второго стенда\n');
+    await mkdir(path.join(standSecond, 'вложенный'), { recursive: true });
+    await writeFile(path.join(standSecond, 'вложенный', 'внутри.txt'), 'файл внутри\n');
+
+    const addedSecond = await addProject(standSecond, 'второй стенд');
+    if (!addedSecond.ok) {
+      err('второй стенд не завёлся в реестр прогона');
       return 3;
     }
 
@@ -833,7 +1378,15 @@ async function main() {
       err(daemonLog.join('').split('\n').slice(0, 6).join('\n'));
       return 3;
     }
-    await page.ev("document.querySelector('#projects-list .project').click(); return true;");
+    // ВЫБИРАЕМ СТЕНД ПО ИМЕНИ, а не первый в списке: проектов в реестре прогона два,
+    // и порядок строк — не наше дело.
+    await page.ev(`
+      const rows = Array.from(document.querySelectorAll('#projects-list .project'));
+      const want = rows.find((r) => r.textContent.indexOf('стенд страницы') >= 0);
+      if (!want) return false;
+      want.click();
+      return true;
+    `);
     if (!await page.waitFor("return document.querySelectorAll('#tree-root .node').length > 0;")) {
       err('дерево проекта не наполнилось — прогон ничего не доказывает');
       return 3;
@@ -870,6 +1423,59 @@ async function main() {
     }
     out(`  итог: ${(buttons.notes || []).length ? 'КРАСНО' : 'зелено'}`);
     out('');
+
+    // 5. ТЕРМИНАЛ, СМЕРЯННЫЙ СПРЯТАННЫМ. Идёт до проверки 6: та меняет размер окна и режим,
+    // а этой нужна живая сессия и обе ручки в исходном положении.
+    out('5. терминал не меряется при нулевом размере узла:');
+    const term = await checkTermHidden(page);
+    if (term.fatal) {
+      err(term.fatal);
+      return 3;
+    }
+    for (const n of term.notes) { notes.push(n); code = 1; }
+    out(`  итог: ${term.notes.length ? 'КРАСНО' : 'зелено'}`);
+    out('');
+
+    // 6. ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА.
+    out('6. переключатель режима не врёт:');
+    const mode = await checkDiffMode(page);
+    if (mode.fatal) {
+      err(mode.fatal);
+      return 3;
+    }
+    for (const n of mode.notes) { notes.push(n); code = 1; }
+    out(`  итог: ${mode.notes.length ? 'КРАСНО' : 'зелено'}`);
+    out('');
+
+    // 7. ПЕРЕКЛЮЧЕНИЕ ПРОЕКТОВ И ДЕРЕВО — до проверки 4: та перезагружает страницу.
+    out('7. дерево не теряется при переключении проектов:');
+    const switched = await checkSwitchTree(page);
+    if (switched.fatal) {
+      err(switched.fatal);
+      return 3;
+    }
+    for (const n of switched.notes) { notes.push(n); code = 1; }
+    out(`  итог: ${switched.notes.length ? 'КРАСНО' : 'зелено'}`);
+    out('');
+
+    // 4. ПОЛОТНО ГОВОРИТ ПРИЧИНУ — предпоследней: она глушит загрузчик редактора
+    // и перезагружает страницу, после чего мерить остальное уже нечем.
+    out('4. полотно сравнения говорит причину (загрузчик заглушён блокировкой запроса):');
+    const notice = await checkDiffNotice(page, cdp, sessionId, port);
+    if (notice.fatal) {
+      err(notice.fatal);
+      return 3;
+    }
+    for (const n of notice.notes) { notes.push(n); code = 1; }
+    out(`  итог: ${notice.notes.length ? 'КРАСНО' : 'зелено'}`);
+    out('');
+
+    // 8. ОБРЫВ СВЯЗИ — САМОЙ ПОСЛЕДНЕЙ: она гасит демон стенда.
+    out('8. страница говорит, что связи с демоном нет:');
+    const down = await checkDaemonDown(page, daemon);
+    for (const n of down.notes) { notes.push(n); code = 1; }
+    out(`  итог: ${down.notes.length ? 'КРАСНО' : 'зелено'}`);
+    out('');
   } finally {
     // Уборка: сначала браузер (закрывается по протоколу — иначе его потомки переживут прогон
     // и удержат профиль), потом демон, потом каталоги. Занятость терпится и называется строкой.
@@ -893,8 +1499,9 @@ async function main() {
     out('расхождения:');
     for (const n of notes) out(`  • ${n}`);
   } else {
-    out('расхождений нет: полотно живо после изменения размера, «Сохранить» включается правкой,');
-    out('неполнота списка диффов названа строкой');
+    out('расхождений нет: полотно живо после изменения размера и говорит причину, когда');
+    out('не загрузилось; «Сохранить» включается правкой; неполнота списка диффов названа строкой;');
+    out('терминал не меряется в схлопнутом узле; переключатель режима не врёт');
   }
 
   if (args.negative) {

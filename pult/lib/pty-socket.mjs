@@ -130,6 +130,16 @@ export async function bridge(ws, url) {
     refuse(ws, 1008, FAULT.PATH_UNREACHABLE);
     return;
   }
+  // КОРЕНЬ ОТВЕРГНУТ — сессии не будет, и проверка стоит ДО `openSession()`: рабочим каталогом
+  // сессии стал бы отвергнутый корень, то есть человек получил бы оболочку в домашнем каталоге
+  // прямо со страницы. Тут даже читать ничего не надо, поэтому случай обиднее прочих. Пометка
+  // берётся из записи, корень заново не считается: два места, считающие одно и то же
+  // по-разному, сходятся по слабому.
+  if (entry.rejected) {
+    say(`сессия не открыта: ${entry.rejected}`);
+    refuse(ws, 1008, entry.rejected);
+    return;
+  }
 
   const cols = Number(url.searchParams.get('cols'));
   const rows = Number(url.searchParams.get('rows'));
