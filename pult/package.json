@@ -1,18 +1,24 @@
 {
   "name": "cckit-pult",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.4.0",
   "type": "module",
-  "description": "Локальный демон пульта над claude-agent-kit: реестр проектов, чтение их .claude по HTTP, страница рабочего места, живая сессия в псевдотерминале и правка файлов проекта со сверкой. В папку набора не пишет ни байта.",
+  "description": "Локальный демон пульта над claude-agent-kit: реестр проектов, чтение их .claude по HTTP, страница рабочего места, живая сессия в псевдотерминале и правка файлов проекта со сверкой. В папку набора не пишет ни байта. Фаза 3 добавила лёгкий маршрут ожиданий для оболочки и границу корня проекта; фаза 4 — сверку отпечатка по составу профиля и чтение записи о раскладке, новых маршрутов не заводя. Раскладку набора, снос и команды набора запускает оболочка подпроцессами; сама оболочка Electron живёт отдельным пакетом в shell/ и в зависимости демона не входит.",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "start": "node server.mjs",
+    "shell": "npm --prefix shell ci && npm --prefix shell start",
     "parity": "node tools/fingerprint-parity.mjs",
     "nowrite": "node tools/no-write-check.mjs",
     "writescope": "node tools/write-scope-check.mjs",
-    "pagecheck": "node tools/page-check.mjs"
+    "pagecheck": "node tools/page-check.mjs",
+    "shellcheck": "node tools/shell-check.mjs",
+    "deploycheck": "node tools/deploy-check.mjs",
+    "kitruncheck": "node tools/kitrun-check.mjs",
+    "wizardcheck": "node tools/wizard-check.mjs",
+    "check": "node tools/check-all.mjs"
   },
   "dependencies": {
     "node-pty": "1.1.0",

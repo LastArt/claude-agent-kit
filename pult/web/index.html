@@ -34,6 +34,11 @@
   <span class="status-item" id="status-fingerprint">отпечаток: —</span>
   <span class="status-item" id="status-task">задача: —</span>
   <span class="spacer"></span>
+  <!-- Кнопка есть ТОЛЬКО в оболочке: моста в браузере нет, и показывать её там нечем.
+       Скрытость стоит в разметке, а снимает её страница по признаку моста (app.mjs). -->
+  <button type="button" class="btn btn-quiet" id="btn-add-project" hidden>Добавить проект…</button>
+  <!-- Кнопка мастера установки. Без оболочки её нет вовсе: раскладывать нечем. -->
+  <button type="button" class="btn btn-quiet" id="btn-deploy-kit" hidden>Развернуть набор…</button>
   <button type="button" class="btn btn-quiet" id="btn-refresh">Обновить</button>
 </header>
 
@@ -56,6 +61,12 @@
           <button type="button" class="btn btn-quiet" id="btn-verify-fingerprint">Сверить с эталоном</button>
         </div>
         <p class="muted small" id="card-diverged"></p>
+        <!--
+          СОСТАВ И ПРИЧИНА «ЯДРО НЕ НАШЕ» (фаза 4, шаг 21). Список исключённого —
+          ПОИМЁННЫЙ: число вместо перечня прячет ровно то, что вынесли из сверки.
+        -->
+        <p class="muted small" id="card-composition"></p>
+        <p class="muted small" id="card-core"></p>
         <h4>Задачи</h4>
         <ul class="tasks" id="card-tasks"></ul>
         <div class="task-detail" id="task-detail" hidden>
@@ -66,6 +77,20 @@
           <ul class="log" id="task-log"></ul>
         </div>
         <p class="faults small" id="card-faults"></p>
+
+        <!--
+          НАСТРОЙКИ ПРОЕКТА (фаза 4, части C и F). Панель ТОЛЬКО ПОКАЗЫВАЕТ: правки
+          настроек из интерфейса в эту фазу не входят. Списки исключённого и пропущенного
+          ядра — поимённые: состояние «ядро не наше» обязано уметь назвать причину.
+        -->
+        <section class="project-settings" id="project-settings" hidden>
+          <h4>Настройки проекта</h4>
+          <p class="small"><span class="muted">профиль состава:</span> <span id="settings-preset">—</span></p>
+          <p class="small muted" id="settings-excluded"></p>
+          <p class="small muted" id="settings-skipped-core"></p>
+          <p class="small mono" id="settings-owns"></p>
+          <button type="button" class="btn btn-quiet" id="btn-remove-kit">Снять набор…</button>
+        </section>
       </section>
     </div>
   </aside>
@@ -117,6 +142,8 @@
         <div class="diff-bar">
           <span id="diff-summary">дифф не загружен</span>
           <span class="spacer"></span>
+          <!-- Тихая подпись «узко»: её ставит diff.mjs, когда полотно уже, чем порог. -->
+          <span class="small muted" id="diff-mode-note"></span>
           <button type="button" class="btn btn-quiet" id="btn-diff-mode">Показать лентой</button>
           <button type="button" class="btn btn-quiet" id="btn-diff-reload">Обновить</button>
         </div>
@@ -126,6 +153,28 @@
         </div>
       </div>
     </div>
+
+    <!--
+      ПАНЕЛЬ КОМАНД НАБОРА (фаза 4). СКРЫТА ПО УМОЛЧАНИЮ И БЕЗ ОБОЛОЧКИ НЕ ПОКАЗЫВАЕТСЯ:
+      команды запускает главный процесс оболочки, в браузере запускать их нечем. Кнопки
+      строит `kitrun.mjs` из закрытого словаря ключей — в разметке их нет ни одной,
+      чтобы список кнопок и список ключей не разъезжались.
+
+      Вывод показывается ДОСЛОВНО (§4.6 контракта) и только текстовым содержимым узла:
+      разметкой сюда не вставляется ничего.
+    -->
+    <section class="kitrun" id="kitrun" hidden>
+      <div class="kitrun-bar">
+        <strong class="small">Команды набора</strong>
+        <span class="small muted" id="kitrun-status">выберите проект</span>
+        <span class="spacer"></span>
+        <span class="badge" id="kitrun-code" hidden>код: —</span>
+      </div>
+      <div class="kitrun-buttons" id="kitrun-read"></div>
+      <p class="small muted">Ниже — команды, которые МЕНЯЮТ состояние: каждая спросит системное подтверждение.</p>
+      <div class="kitrun-buttons kitrun-danger" id="kitrun-write"></div>
+      <pre class="mono kitrun-out" id="kitrun-output"></pre>
+    </section>
 
     <!--
       ПОЛОСА ГЕЙТА — ТРИ ФАКТА И ТОЛЬКО ОНИ: взведён или нет, приёмка зелёная или нет,
@@ -152,6 +201,48 @@
       <ul class="tree" id="tree-root"></ul>
     </div>
   </aside>
+
+  <!--
+    ЭКРАН МАСТЕРА УСТАНОВКИ (фаза 4, часть E) и ЭКРАН ПРИЁМКИ ЗАДАЧИ (часть F).
+    Разметка заведена одним шагом вместе с остальной разметкой фазы и скрыта: модули,
+    которые её оживляют, приезжают своими шагами. Пустая скрытая секция не показывает
+    ничего и ничего не ломает, а разметка, размазанная по трём шагам, разъезжается.
+
+    ПУТЬ ПРОЕКТА В МАСТЕРЕ НЕ ВВОДИТСЯ И НЕ ПОКАЗЫВАЕТСЯ ПОЛЕМ ВВОДА: он рождается
+    в системном диалоге главного процесса, поэтому здесь его место — обычный текст.
+  -->
+  <section class="wizard" id="deploy-wizard" hidden>
+    <div class="wizard-head">
+      <h2>Развернуть набор в проект</h2>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-quiet" id="btn-wizard-close">Закрыть</button>
+    </div>
+    <p class="small muted" id="wizard-master">мастер-копия: —</p>
+    <p class="small" id="wizard-found">каталог не выбран</p>
+    <ul class="wizard-list" id="wizard-present"></ul>
+    <ul class="wizard-list" id="wizard-hooks"></ul>
+    <p class="small muted" id="wizard-claude-md"></p>
+    <div class="wizard-row">
+      <label class="small" for="wizard-preset">Профиль:</label>
+      <select id="wizard-preset"></select>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="btn-wizard-deploy" disabled>Развернуть</button>
+    </div>
+    <p class="small muted" id="wizard-backup">Резервная копия папки набора делается до первой записи.</p>
+    <pre class="mono kitrun-out" id="wizard-report"></pre>
+  </section>
+
+  <section class="accept" id="accept-panel" hidden>
+    <div class="wizard-head">
+      <h2>Приёмка задачи</h2>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-quiet" id="btn-accept-close">Закрыть</button>
+    </div>
+    <p class="small" id="accept-task">задача не выбрана</p>
+    <div class="accept-body" id="accept-body"></div>
+    <ul class="accept-checklist" id="accept-checklist"></ul>
+    <p class="notice" id="accept-notice" hidden></p>
+  </section>
 
 </main>
 

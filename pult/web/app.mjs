@@ -23,6 +23,10 @@ import { createTerminal } from './terminal.mjs';
 import { createTree } from './tree.mjs';
 import { createEditor } from './editor.mjs';
 import { createDiff } from './diff.mjs';
+import { createKitRun } from './kitrun.mjs';
+import { createDeployWizard } from './deploy.mjs';
+import { createAccept } from './accept.mjs';
+import { addressFor } from './addresses.mjs';
 
 // --- мелкая работа с документом ----------------------------------------------
 
@@ -59,6 +63,32 @@ const $ = (id) => document.getElementById(id);
 // --- разговор с демоном -------------------------------------------------------
 
 /**
+ * СВЯЗЬ С ДЕМОНОМ — ГЛОБАЛЬНОЕ СОСТОЯНИЕ СТРАНИЦЫ, а не забота каждого виджета.
+ *
+ * Находка человека 02.09.2026 (дефект 2): демон остановился, и страница осталась выглядеть
+ * живой — полоса состояния показывала «демон 0.3.0» с ЗЕЛЁНОЙ точкой, потому что `refreshDaemon()`
+ * зовётся только на старте и по кнопке «Обновить». Каждый виджет при этом говорил своё:
+ * дерево — «каталог не прочитан: нет связи», карточка — прочерки. Человек читал это как
+ * поломку дерева при переключении проектов, а поломан был не виджет.
+ *
+ * Лечится в ОДНОМ месте, потому что дверь наружу одна: обрыв запроса (`status: 0`) переводит
+ * страницу в состояние «демон не отвечает», а первый удавшийся запрос возвращает её обратно
+ * и перечитывает здоровье. Виджеты при этом не трогаются — им незачем знать про сеть.
+ */
+let daemonReachable = true;
+
+function setDaemonReachable(alive) {
+  if (alive === daemonReachable) return;
+  daemonReachable = alive;
+  if (!alive) {
+    setState($('daemon-dot'), 'is-alarm', ['is-ok', 'is-warn', 'is-alarm']);
+    setText($('daemon-text'), 'демон не отвечает — страница ничего не прочитает');
+    return;
+  }
+  refreshDaemon();
+}
+
+/**
  * Один запрос. Наружу отдаётся `{ok, status, body}` и НИКОГДА исключение: у демона отказ —
  * это тело с машинным кодом (`code`), а не обрыв, и страница обязана уметь его показать.
  * Сеть здесь всегда своя, петлевая: адреса относительные, чужих источников нет.
@@ -68,8 +98,11 @@ async function req(url, init) {
     const res = await fetch(url, init);
     let body = null;
     try { body = await res.json(); } catch { body = null; }
+    setDaemonReachable(true);
     return { ok: res.ok, status: res.status, body };
   } catch {
+    // Сюда приходит ТОЛЬКО обрыв: отказ демона — это ответ с телом, он выше.
+    setDaemonReachable(false);
     return { ok: false, status: 0, body: null };
   }
 }
@@ -108,8 +141,29 @@ const WORDS = Object.freeze({
   state: {
     ok: 'набор на месте', unreachable: 'папка недоступна', no_kit: 'набора нет',
     foreign: 'чужой набор', legacy: 'старая структура',
+    // ШЕСТОЕ СОСТОЯНИЕ ФАЗЫ 3, и фраза здесь говорит человеку, ЧТО ДЕЛАТЬ. Без строки
+    // в этом словаре запись показывалась бы прочерком: состояние было бы видно машине
+    // и невидимо человеку — а решение 11 плана ровно про обратное. Запись из реестра при
+    // этом не пропадает: демон отказывается читать и писать под таким корнем, но список
+    // ведёт человек.
+    root_rejected: 'каталог отвергнут как корень проекта — выберите папку самого проекта',
   },
-  verdict: { match: 'сходится', mismatch: 'расхождение', unknown: 'неизвестно' },
+  // ЧЕТВЁРТОЕ СЛОВО ВЕРДИКТА (фаза 4): «сходится по составу профиля». Оно отдельное,
+  // а не общий `match`, потому что утверждение слабее: сверялся не весь набор, а состав
+  // профиля, и ПОЛНЫЕ значения при этом законно различаются. Без своей фразы человек читал
+  // бы «сходится» и не знал, что часть файлов из сверки вынесена.
+  verdict: {
+    match: 'сходится', match_preset: 'сходится по составу профиля',
+    mismatch: 'расхождение', unknown: 'неизвестно',
+  },
+  // Причины вердикта «неизвестно», у которых перевод что-то добавляет. Всё прочее уходит
+  // общей строкой с самим кодом: выдумывать объяснение незнакомому коду хуже, чем показать код.
+  reason: {
+    core_foreign: 'ядро набора в проекте не наше',
+    reference_missing: 'мастер-копия набора недоступна — сверять не с чем',
+    deploy_record_invalid: 'запись о раскладке негодна',
+    scan_truncated: 'обход состава неполон',
+  },
   gateStatus: { implementing: 'взведён', verified: 'взведён, приёмка пройдена', blocked: 'взведён, заблокирован' },
   gateVerify: { pass: 'зелёная', partial: 'частичная', fail: 'красная', none: 'не гонялась' },
   review: { approved: 'принято', changes_requested: 'на доработку', blocked: 'заблокировано' },
@@ -269,14 +323,64 @@ function renderCard() {
 
   const verdict = p.fingerprint ? p.fingerprint.verdict : null;
   const badge = $('card-verdict');
-  setText(badge, `отпечаток: ${word(WORDS.verdict, verdict)}`);
-  setState(badge, verdict === 'match' ? 'is-ok' : (verdict === 'mismatch' ? 'is-alarm' : 'is-warn'),
+  // Причина уезжает в подпись значка, когда она есть: «неизвестно» без причины человек
+  // читает как поломку пульта, а не как состояние проекта.
+  const reasonCode = p.fingerprint ? p.fingerprint.reason : null;
+  const reasonText = reasonCode && verdict === 'unknown'
+    ? ` (${WORDS.reason[reasonCode] || reasonCode})` : '';
+  setText(badge, `отпечаток: ${word(WORDS.verdict, verdict)}${reasonText}`);
+  const good = verdict === 'match' || verdict === 'match_preset';
+  setState(badge, good ? 'is-ok' : (verdict === 'mismatch' ? 'is-alarm' : 'is-warn'),
     ['is-ok', 'is-warn', 'is-alarm']);
 
   const diverged = (p.fingerprint && p.fingerprint.diverged) || [];
   setText($('card-diverged'), diverged.length
     ? `расходится: ${diverged.slice(0, 12).join(', ')}${p.fingerprint.truncated ? ' …' : ''}`
     : '');
+
+  // СОСТАВ ПРОФИЛЯ И ПРИЧИНА «ЯДРО НЕ НАШЕ» (шаг 21, находка N круга 3 аудита).
+  //
+  // Записи о раскладке нет — обе строки пусты, и карточка выглядит ровно как раньше.
+  // Список исключённого ПОИМЁННЫЙ: число вместо перечня прячет ровно то, что вынесли
+  // из сверки, а вынесенное — это то, что перестало охраняться.
+  const comp = p.fingerprint && p.fingerprint.composition;
+  const compNode = $('card-composition');
+  const coreNode = $('card-core');
+  if (!comp) {
+    setText(compNode, '');
+    setText(coreNode, '');
+  } else {
+    const bits = [`профиль состава: ${comp.profile}`];
+    if (comp.excluded.length) {
+      bits.push(`из сверки исключено (${comp.excluded.length}): ${comp.excluded.slice(0, 12).join(', ')}`
+        + `${comp.excluded_truncated || comp.excluded.length > 12 ? ' …' : ''}`);
+    }
+    // ЗНАЧЕНИЕ ПО СОСТАВУ ПОКАЗЫВАЕТСЯ ВСЕГДА, КОГДА ОНО ЕСТЬ. При вердикте «сходится
+    // по составу» ПОЛНОГО значения не существует вовсе (`value: null` — обход спотыкается
+    // о пути, которых профиль не разворачивал), и пустое поле рядом со словом «сходится»
+    // человек читает как поломку пульта. Показываем то, что реально сравнивалось.
+    if (comp.value) bits.push(`значение по составу: ${comp.value} (эталон ${comp.reference || "—"})`);
+    if (comp.compared) bits.push(`сверено путей: ${comp.compared}`);
+    if (verdict === 'match_preset') {
+      bits.push('полного значения у проекта с профилем не существует: список состава едет'
+        + ' целиком, а исключённых каталогов в проекте нет — сверялся состав профиля');
+    }
+    setText(compNode, bits.join(' · '));
+
+    // СОСТОЯНИЕ «ЯДРО НЕ НАШЕ» ОБЯЗАНО НАЗВАТЬ ПРИЧИНУ. Без этого самый частый случай
+    // §4.2 — раскладка туда, где набор уже стоял, — давал бы человеку отказ без
+    // объяснения, а необъяснённый отказ снимают первым.
+    const core = [];
+    if (comp.core_missing.length) {
+      core.push(`нет в проекте или хеш разошёлся (${comp.core_missing.length}):`
+        + ` ${comp.core_missing.slice(0, 12).join(', ')}`);
+    }
+    if (comp.skipped_core.length) {
+      core.push(`эти файлы ядра уже были у вас, набор их не заменял (${comp.skipped_core.length}):`
+        + ` ${comp.skipped_core.slice(0, 12).join(', ')}`);
+    }
+    setText(coreNode, core.join(' · '));
+  }
 
   const tasks = $('card-tasks');
   clear(tasks);
@@ -285,6 +389,11 @@ function renderCard() {
     const li = el('li', 'task');
     if (t.id === state.task) li.classList.add('is-active');
     li.appendChild(el('span', 'task-name', t.title || t.id));
+    // КЛАСС РИСКА ВИДЕН В СПИСКЕ, а не только в раскрытой задаче: он решает, был ли аудит
+    // безопасности вообще (при `cosmetic` он пропускается целиком), и человеку за пультом
+    // это надо видеть БЕЗ открытия задачи. Посмотреть его иначе можно только в `STATE.md`
+    // руками: кнопки «класс риска» у пульта нет намеренно — она ПИШЕТ (ревью 03.09.2026).
+    if (t.class && t.class !== '-') li.appendChild(el('span', 'badge', t.class));
     li.appendChild(el('span', 'status', t.status || '—'));
     li.addEventListener('click', () => {
       state.task = t.id;
@@ -323,6 +432,16 @@ async function loadProject(id) {
  * поднимать сессию на каждый клик по проекту нельзя — это заводило бы оболочку машины
  * простым просмотром списка и упиралось бы в потолок числа сессий.
  */
+/**
+ * ПАНЕЛЬ КОМАНД НАБОРА И МАСТЕР УСТАНОВКИ. Оба живут ТОЛЬКО в оболочке: команды набора
+ * и раскладку запускает главный процесс, и в браузере их запускать нечем. Здесь объявлены
+ * пустыми, а собираются ниже — там, где становится известно, жив ли мост.
+ */
+let kitrun = null;
+let wizard = null;
+/** Экран приёмки и панель настроек проекта. Живут и без моста: они читают, а не действуют. */
+let accept = null;
+
 async function selectProject(id) {
   if (state.selected === id) return;
   state.selected = id;
@@ -334,6 +453,10 @@ async function selectProject(id) {
   renderProjects();
   await tree.load(id);
   diff.reset();
+  // Вывод чужой команды не должен пережить переключение проекта: сброс и показ заново.
+  if (kitrun) { kitrun.reset(); kitrun.show(id); }
+  // Панель настроек проекта — только показ; экран приёмки прячется до своего повода.
+  if (accept) { accept.hide(); await accept.showSettings(state.project); }
 }
 
 async function refreshAll() {
@@ -412,6 +535,7 @@ const diff = createDiff({
   files: $('diff-files'),
   summary: $('diff-summary'),
   modeButton: $('btn-diff-mode'),
+  modeNote: $('diff-mode-note'),
   api,
   ui,
 });
@@ -457,6 +581,208 @@ window.addEventListener('resize', () => {
   editor.layout();
   diff.layout();
 });
+
+// --- оболочка: то, чего нет в браузере ----------------------------------------
+//
+// ЗДЕСЬ НЕ ПОЯВЛЯЕТСЯ НИ ОДНОГО НОВОГО ОБРАЩЕНИЯ К ДЕМОНУ, и это несущее свойство, а не
+// экономия: маршрута записи в реестр у демона нет и не будет (решение по итогам круга 1
+// аудита). Проект заводит инструмент кита, которого запускает оболочка; страница только
+// просит и показывает результат.
+//
+// В браузере `window.cckitShell` не существует вовсе — значит кнопка остаётся скрытой,
+// подписки нет, и ни одна строка этого раздела не исполняется.
+const shell = window.cckitShell && window.cckitShell.present === true ? window.cckitShell : null;
+
+/**
+ * ЭКРАН ПРИЁМКИ И ПАНЕЛЬ НАСТРОЕК собираются ВСЕГДА, а не только в оболочке: оба ЧИТАЮТ
+ * (итог задачи, профиль состава, служебный ключ владения) и без моста просто не показывают
+ * кнопок решений — модуль сам говорит человеку, чего не хватает. Кнопка сноса без моста
+ * остаётся выключенной.
+ */
+accept = createAccept({
+  host: $('accept-panel'),
+  taskLine: $('accept-task'),
+  body: $('accept-body'),
+  checklist: $('accept-checklist'),
+  notice: $('accept-notice'),
+  closeButton: $('btn-accept-close'),
+  settingsHost: $('project-settings'),
+  settingsPreset: $('settings-preset'),
+  settingsExcluded: $('settings-excluded'),
+  settingsSkippedCore: $('settings-skipped-core'),
+  settingsOwns: $('settings-owns'),
+  removeButton: $('btn-remove-kit'),
+  api,
+  shell,
+  ui,
+  onChanged: async () => {
+    await refreshAll();
+    if (state.selected) await accept.showSettings(state.project);
+  },
+});
+
+/**
+ * У КАЖДОЙ ПРИЧИНЫ ОЖИДАНИЯ — СВОЙ АДРЕС НАЗНАЧЕНИЯ (пункт 7 договора с фазой 4).
+ *
+ * Уведомление обязано ВЕСТИ, а не разворачивать окно: смысл его — сократить путь от «меня
+ * ждут» до «я ответил». Уведомление, которое доводит до окна и бросает, экономит только
+ * переключение между приложениями, а поиск места решения оставляет человеку.
+ *
+ * Семь причин из `PENDING_REASONS` (`pult/config.mjs`), четыре адреса:
+ *   awaiting_approval    — карточка задачи и открытый `PLAN.md`;
+ *   awaiting_acceptance  — экран приёмки;
+ *   blocked              — карточка и открытый `STATE.md`;
+ *   gate_blocked         — полоса машинной приёмки и, если отчёт есть, открытый отчёт;
+ *   stop_product | stop_technical | stop_security — вкладка терминала с подсказкой.
+ *
+ * СЕССИЯ ТЕРМИНАЛА НЕ ПОДНИМАЕТСЯ АВТОМАТИЧЕСКИ, и это правило фазы 2, а не забывчивость:
+ * поднимать оболочку машины по ВНЕШНЕМУ событию нельзя. Человек нажимает «Подключить» сам,
+ * а страница только показывает вкладку и говорит, что ответ набирается в сессии.
+ *
+ * ПРИЧИНА НЕ ПРИШЛА ИЛИ НЕ ОПОЗНАНА — ПРЕЖНЕЕ ПОВЕДЕНИЕ: карточка задачи. Молчаливого
+ * «никуда» здесь нет: адрес по умолчанию есть всегда.
+ */
+async function goToReason(reason, task) {
+  // Таблица «причина → адрес» живёт отдельным чистым модулем и проверяется машинно
+  // (проверка 9 в `pult/tools/page-check.mjs`): «у каждой из семи причин есть свой адрес» —
+  // утверждение, которое ломается ТИХО, когда в набор добавят восьмую причину.
+  const address = addressFor(reason);
+
+  if (address === 'accept') {
+    if (accept) await accept.show(state.project, task);
+    return;
+  }
+  if (address === 'plan') {
+    await openFile(`.claude/tasks/${task.id}/PLAN.md`);
+    return;
+  }
+  if (address === 'state') {
+    await openFile(`.claude/tasks/${task.id}/STATE.md`);
+    return;
+  }
+  if (address === 'gate') {
+    const gate = state.project && state.project.gate;
+    // Отчёт приёмки открывается, только если демон его видел: файла может не быть вовсе.
+    if (gate && gate.verify && gate.verify !== 'none') {
+      await openFile('.claude/artifacts/VERIFY.json');
+    }
+    $('gatebar').scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (address === 'terminal') {
+    // СЕССИЯ НЕ ПОДНИМАЕТСЯ САМА, и это правило фазы 2, а не забывчивость: поднимать
+    // оболочку машины по ВНЕШНЕМУ событию (уведомлению) нельзя. Человек нажимает
+    // «Подключить» сам, а страница только приводит его на вкладку и говорит, что делать.
+    showPane('terminal');
+    setText($('terminal-status'), 'задача ждёт ответа на [СТОП] — ответ набирается в сессии;'
+      + ' нажмите «Подключить»');
+    return;
+  }
+  // Адрес по умолчанию — карточка задачи, она уже показана. Молчаливого «никуда» нет.
+}
+
+/**
+ * Открыть задачу, о которой пришло уведомление оболочки.
+ *
+ * ИДЕНТИФИКАТОРЫ СВЕРЯЮТСЯ С ОТВЕТОМ ДЕМОНА, а не принимаются на веру: чего в ответе нет,
+ * то не открывается, а тихо игнорируется. Уведомление могло опоздать — задачу закрыли,
+ * проект убрали из реестра.
+ */
+async function openTaskFromShell(projectId, taskId, reason) {
+  await refreshAll();
+  if (!state.projects.some((p) => p.id === projectId)) return;
+  await selectProject(projectId);
+  const items = (state.project && state.project.tasks) || [];
+  const found = items.find((t) => t.id === taskId);
+  if (!found) return;
+  state.task = found.id;
+  renderCard();
+  renderTaskDetail(found);
+  await goToReason(reason, found);
+}
+
+if (shell) {
+  const addButton = $('btn-add-project');
+  addButton.hidden = false;
+
+  // ПАНЕЛЬ КОМАНД НАБОРА. Кнопки строит сам модуль из закрытого словаря ключей —
+  // в разметке их нет ни одной, чтобы список кнопок и список ключей не разъезжались.
+  kitrun = createKitRun({
+    host: $('kitrun'),
+    read: $('kitrun-read'),
+    write: $('kitrun-write'),
+    output: $('kitrun-output'),
+    status: $('kitrun-status'),
+    code: $('kitrun-code'),
+    shell,
+    ui,
+  });
+  if (state.selected) kitrun.show(state.selected);
+
+  // МАСТЕР УСТАНОВКИ. Путь рождается в системном диалоге главного процесса; страница
+  // только просит осмотр и показывает найденное ДО раскладки (§4.2, правило 2).
+  wizard = createDeployWizard({
+    host: $('deploy-wizard'),
+    master: $('wizard-master'),
+    found: $('wizard-found'),
+    present: $('wizard-present'),
+    hooks: $('wizard-hooks'),
+    claudeMd: $('wizard-claude-md'),
+    presetSelect: $('wizard-preset'),
+    deployButton: $('btn-wizard-deploy'),
+    backup: $('wizard-backup'),
+    report: $('wizard-report'),
+    closeButton: $('btn-wizard-close'),
+    shell,
+    ui,
+    onDeployed: async (id) => {
+      await refreshAll();
+      if (id && state.projects.some((pr) => pr.id === id)) await selectProject(id);
+    },
+  });
+
+  const deployButton = $('btn-deploy-kit');
+  deployButton.hidden = false;
+  deployButton.addEventListener('click', async () => {
+    wizard.show();
+    await wizard.inspect();
+  });
+
+  addButton.addEventListener('click', async () => {
+    addButton.disabled = true;
+    let res = null;
+    try {
+      // БЕЗ ЕДИНОГО АРГУМЕНТА, И ЭТО ПРАВИЛО, А НЕ УПРОЩЕНИЕ: путь рождается в системном
+      // диалоге главного процесса и на страницу не возвращается. Именно на этом держится
+      // свойство, ради которого снят маршрут записи, — чужой скрипт здесь не может назначить
+      // корень проекта, потому что назначать его нечем.
+      res = await shell.addProject();
+    } finally {
+      addButton.disabled = false;
+    }
+    if (!res || res.cancelled) return;
+    if (res.ok) {
+      await refreshAll();
+      // Нет в обновлённом списке — просто оставляем список обновлённым, ничего не выдумывая.
+      if (state.projects.some((p) => p.id === res.id)) await selectProject(res.id);
+      return;
+    }
+    // ОТКАЗ ПОКАЗЫВАЕТСЯ ТЕКСТОМ ИНСТРУМЕНТА КАК ЕСТЬ, без пересказа: это отказ команды кита,
+    // и он объясняет причину лучше, чем мог бы объяснить пересказ словами страницы. Своего
+    // места под многострочный текст на странице нет, а заводить его ради одной ветви значило
+    // бы расширять задачу; в оболочке это обычное системное окно.
+    window.alert(res.message || 'проект не заведён');
+  });
+
+  // Подписка на «открыть задачу». Мост шлёт обычное сообщение окна — метод, принимающий
+  // обработчик, объявил бы параметр, а у моста ни одна функция ничего не принимает.
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.kind !== shell.openTaskMessage) return;
+    openTaskFromShell(data.project, data.task, data.reason);
+  });
+}
 
 // На старте проект НЕ выбирается сам, и это решение, а не недоделка: запрос одного проекта
 // стоит полного обхода отпечатка, а он синхронный и держит цикл событий вместе с терминалом
